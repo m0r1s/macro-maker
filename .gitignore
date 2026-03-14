@@ -1,0 +1,41 @@
+# Build and distribution
+build/
+dist/
+*.spec
+*.egg-info/
+*.egg
+*.whl
+*.tar.gz
+*.zip
+
+# PyPI / setuptools
+.eggs/
+
+# Bytecode
+*.pyc
+*.pyo
+__pycache__/
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Development
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json

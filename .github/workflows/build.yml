@@ -1,0 +1,36 @@
+name: Build EXE
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyinstaller PySide6 pynput requests
+
+      - name: Build EXE
+        run: pyinstaller --onefile --noconsole --clean --paths src --icon icon.ico --name MorisMacroMaker src/macro_maker/main.py
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/MorisMacroMaker.exe
+          generate_release_notes: true
