@@ -1,7 +1,6 @@
 # Build and distribution
 build/
 dist/
-*.spec
 *.egg-info/
 *.egg
 *.whl
