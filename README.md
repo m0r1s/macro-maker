@@ -2,7 +2,7 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/) [![License: MUL](https://img.shields.io/badge/license-MUL-orange.svg)](LICENSE.md) [![Platform: Windows](https://img.shields.io/badge/platform-Windows-informational.svg)](https://www.microsoft.com/windows) [![Discord](https://img.shields.io/badge/Discord-Join-5865F2.svg)](https://discord.com/invite/2fraBuhe3m)
 
-A lightweight macro recording and playback tool for Windows. Record your keyboard and mouse actions once, then replay them instantly — with full control over speed, looping, and timing.
+A lightweight macro recording and playback tool for Windows and macOS. Record your keyboard and mouse actions once, then replay them instantly — with full control over speed, looping, and timing.
 
 Tired of repeating the same clicks and keystrokes? m³ captures everything you do and plays it back with precision. No scripting, no setup — just record and go.
 
@@ -11,19 +11,22 @@ Tired of repeating the same clicks and keystrokes? m³ captures everything you d
 ## Features
 
 - **Full Input Recording** — Captures keyboard presses, mouse clicks, movement, and scrolling in real-time
-- **Playback Control** — Replay macros at adjustable speed with configurable loop count and interval
-- **Custom Hotkeys** — Assign any key to start/stop recording and playback (default: F1 / F2)
-- **Event Editing** — Add wait events and edit your macro directly in the UI
-- **Webhook Support** — Trigger Discord or HTTP webhooks during playback
+- **Playback Control** — Replay at adjustable speed with configurable loop count and interval timing
+- **Custom Hotkeys** — Bind any key to start/stop recording and playback (default: F1 / F2); hold to pause instead of stopping
+- **Event Editing** — Add, copy (Ctrl+C), and paste (Ctrl+V) inputs; use Insert After preview to place new inputs precisely
+- **Loop Above** — Insert a Loop Above event to loop a subset of inputs within a sequence without re-recording
+- **Mouse Movement** — Linear or Humanoid movement modes with configurable move duration and set-position support
+- **Webhook Support** — Trigger Discord or HTTP webhooks during playback for notifications and integrations
 - **Auto-Save** — Your last session is automatically saved and restored on next launch
-- **Save / Load Macros** — Export and import macros as `.mmr` files
-- **Windows-Native Input** — Uses the Windows API for reliable, low-level input simulation
+- **Save / Load Macros** — Export and import macros as `.mmr` files — share and reuse across sessions
+- **macOS Support** — v1.1 adds full macOS compatibility with the same feature set as Windows
+- **Cross-Platform Input** — Runs on Windows and macOS using native OS APIs for reliable, low-level input simulation
 
 ---
 
 ## System Requirements
 
-- **OS**: Windows 7 or later (64-bit recommended)
+- **OS**: Windows 7 or later (64-bit recommended), macOS
 - **Python**: 3.10 or higher
 - **Dependencies**: PySide6, pynput, requests
 
@@ -74,10 +77,7 @@ Download the latest release from the [Releases](https://github.com/m0r1s/macro-m
 
 ### 3. Customize
 
-- **Loop**: Enable looping and set how many times to repeat or to loop continuously
-- **Hotkeys**: Open settings to assign your own record/play keys
-- **Save**: Export your macro as a `.mmr` file to reuse later
-- **Webhooks**: Add webhook events to notify a URL during playback
+- Set loop count, change hotkeys, add Loop Above events, copy/paste inputs, use Linear or Humanoid mouse movement, and hook into Discord
 
 ---
 
@@ -93,7 +93,6 @@ Download the latest release from the [Releases](https://github.com/m0r1s/macro-m
 
 ### Known Limitations
 
-- **Windows only** — uses the Windows API for input simulation
 - **Coordinate-based** — mouse positions are absolute; changing screen resolution affects playback
 - **No conditional logic** — macros run the same way every time
 - **Anti-cheat** — games with anti-cheat systems may block input simulation
@@ -107,15 +106,17 @@ Download the latest release from the [Releases](https://github.com/m0r1s/macro-m
 - Adjustable playback speed
 - Loop count and loop interval
 - Custom hotkeys
-- Webhook events
+- Discord webhook events
 - Auto-save and `.mmr` file format
+- macOS support
+- Loop Above, Linear/Humanoid mouse movement
 
 ### Planned
-- [ ] macOS support
 - [ ] Macro scheduling (run at a specific time)
 - [ ] Conditional event logic
-- [ ] Debug Mode (Step by Step playback for Analysis)
-- [ ] Multi macro scheduling (Run Multiple macros at the same Time)
+- [ ] Debug Mode — step-by-step playback
+- [ ] Multi-macro scheduling
+- [ ] Right click dragging recording
 
 ---
 
