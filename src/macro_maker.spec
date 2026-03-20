@@ -64,13 +64,10 @@ app = BUNDLE(
         "CFBundleVersion": "1.0.0",
         "CFBundleShortVersionString": "1.0.0",
         "NSHighResolutionCapable": True,
-        # Required for macOS to allow Input Monitoring permission grants
         "NSInputMonitoringUsageDescription":
             "Macro Maker needs Input Monitoring to record keyboard inputs.",
-        # Required for macOS to allow Apple Events / Accessibility permission grants
         "NSAppleEventsUsageDescription":
             "Macro Maker needs Accessibility to replay keyboard and mouse inputs.",
-        # Suppress the automatic Hardened Runtime restriction on Apple Events
         "com.apple.security.automation.apple-events": True,
     },
 )
