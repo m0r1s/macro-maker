@@ -18,15 +18,10 @@ Full license text: See LICENSE.md
 For support: https://discord.gg/2fraBuhe3m
 """
 
-"""Save / load routines for macro event sequences.
-
-Binary .mmr format + Windows Registry settings persistence.
-No Qt imports.
-"""
-
 import json
 import os
 import struct
+import sys
 from typing import Any
 
 from .constants import (
@@ -37,10 +32,6 @@ from .constants import (
     REGISTRY_KEY,
 )
 
-
-# ---------------------------------------------------------------------------
-# Internal key encoding helpers
-# ---------------------------------------------------------------------------
 
 def _btn_byte(s: str) -> int:
     return 1 if s == "right" else (2 if s == "middle" else 0)
@@ -102,19 +93,7 @@ def _mmr_decode_key(data: bytes, pos: int) -> tuple[dict, int]:
     return {"vk": vk, "char": None}, pos
 
 
-# ---------------------------------------------------------------------------
-# Serialization helpers exposed to recorder / player
-# ---------------------------------------------------------------------------
-
 def ser_key(key: Any) -> dict:
-    """Serialize a pynput key object to a plain dict.
-
-    Args:
-        key: A ``pynput.keyboard.Key`` or ``KeyCode`` instance.
-
-    Returns:
-        A dict with either a ``special`` or ``char``/``vk`` field.
-    """
     try:
         from pynput.keyboard import Key, KeyCode
         if isinstance(key, Key):
@@ -127,15 +106,6 @@ def ser_key(key: Any) -> dict:
 
 
 def ser_key_to_canon(k: Any) -> str | None:
-    """Convert a serialized key dict to a canonical string for hotkey matching.
-
-    Args:
-        k: A key dict produced by :func:`ser_key` or a raw pynput key.
-
-    Returns:
-        A canonical string like ``"Key.f1"``, ``"a"``, or ``"vk:65"``,
-        or ``None`` if the key cannot be canonicalized.
-    """
     if isinstance(k, dict):
         if k.get("special"):
             return k["special"]
@@ -150,24 +120,16 @@ def ser_key_to_canon(k: Any) -> str | None:
 
 
 def parse_key(k: Any) -> Any:
-    """Convert a serialized key dict back to a pynput key object.
-
-    Args:
-        k: A key dict or string representation.
-
-    Returns:
-        A ``pynput.keyboard.Key`` or ``KeyCode`` instance, or ``None``.
-    """
     try:
         from pynput.keyboard import Key, KeyCode
         if isinstance(k, dict):
             if k.get("special"):
                 attr = k["special"].replace("Key.", "")
                 return getattr(Key, attr, None)
+            if k.get("vk") is not None:
+                return KeyCode.from_vk(k["vk"])
             if k.get("char") is not None:
                 return KeyCode.from_char(k["char"])
-            if k.get("vk"):
-                return KeyCode.from_vk(k["vk"])
             return None
         s = str(k)
         if s.startswith("Key."):
@@ -181,14 +143,6 @@ def parse_key(k: Any) -> Any:
 
 
 def str_to_canon(s: str) -> str | None:
-    """Convert a Qt key string (e.g. ``"F1"``, ``"Escape"``) to a pynput canon.
-
-    Args:
-        s: A human-readable key name from Qt's ``QKeySequence``.
-
-    Returns:
-        A canonical key string or ``None`` if unrecognised.
-    """
     s = s.strip()
     if s.upper().startswith("F") and s[1:].isdigit():
         return f"Key.f{s[1:]}"
@@ -214,14 +168,6 @@ def str_to_canon(s: str) -> str | None:
 
 
 def key_to_canon(k: Any) -> str | None:
-    """Convert a live pynput key object to a canonical string.
-
-    Args:
-        k: A ``pynput.keyboard.Key`` or ``KeyCode`` instance.
-
-    Returns:
-        A canonical string or ``None``.
-    """
     try:
         from pynput.keyboard import Key, KeyCode
         if isinstance(k, Key):
@@ -236,17 +182,7 @@ def key_to_canon(k: Any) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Binary MMR save / load
-# ---------------------------------------------------------------------------
-
 def mmr_save(events: list[dict], path: str) -> None:
-    """Write a list of events to a binary .mmr file.
-
-    Args:
-        events: List of event dicts in the canonical format.
-        path:   Destination file path (will be created or overwritten).
-    """
     buf = bytearray()
     buf += MMR_MAGIC
     buf += struct.pack("<I", len(events))
@@ -255,8 +191,19 @@ def mmr_save(events: list[dict], path: str) -> None:
         try:
             t = float(ev["time"])
             if tp == "mouse_move":
-                buf += struct.pack("<Bddd", EvtCode.MOVE, t,
-                                   float(ev["x"]), float(ev["y"]))
+                dur_ms = int(ev.get("move_duration", 0))
+                mode   = ev.get("move_mode", "Linear")
+                if dur_ms > 0 or mode != "Linear":
+                    mode_b = 1 if mode == "Human" else 0
+                    buf += struct.pack("<BdddIB", EvtCode.MOVE_EX, t,
+                                       float(ev["x"]), float(ev["y"]),
+                                       dur_ms, mode_b)
+                elif ev.get("recorded"):
+                    buf += struct.pack("<Bddd", EvtCode.MOVE_REC, t,
+                                       float(ev["x"]), float(ev["y"]))
+                else:
+                    buf += struct.pack("<Bddd", EvtCode.MOVE, t,
+                                       float(ev["x"]), float(ev["y"]))
             elif tp == "mouse_click":
                 buf += struct.pack("<Bddd", EvtCode.CLICK, t,
                                    float(ev["x"]), float(ev["y"]))
@@ -271,6 +218,9 @@ def mmr_save(events: list[dict], path: str) -> None:
                 code = EvtCode.KPRESS if tp == "key_press" else EvtCode.KREL
                 kb   = _mmr_encode_key(_norm_key(ev["key"]))
                 buf += struct.pack("<Bd", code, t) + kb
+            elif tp == "loop_above":
+                count = max(1, int(ev.get("count", 1)))
+                buf += struct.pack("<BdI", EvtCode.LOOP_ABOVE, t, count)
         except Exception:
             pass
     with open(path, "wb") as f:
@@ -278,17 +228,6 @@ def mmr_save(events: list[dict], path: str) -> None:
 
 
 def mmr_load(path: str) -> list[dict]:
-    """Load events from a binary .mmr file.
-
-    Args:
-        path: Path to the .mmr file.
-
-    Returns:
-        List of event dicts.
-
-    Raises:
-        ValueError: If the file magic bytes do not match.
-    """
     with open(path, "rb") as f:
         data = f.read()
     if not data.startswith(MMR_MAGIC):
@@ -306,6 +245,21 @@ def mmr_load(path: str) -> list[dict]:
             x, y = struct.unpack_from("<dd", data, pos)
             pos += 16
             events.append({"type": "mouse_move", "x": x, "y": y, "time": t})
+        elif code == EvtCode.MOVE_REC:
+            x, y = struct.unpack_from("<dd", data, pos)
+            pos += 16
+            events.append({"type": "mouse_move", "x": x, "y": y, "time": t,
+                           "recorded": True})
+        elif code == EvtCode.MOVE_EX:
+            x, y = struct.unpack_from("<dd", data, pos)
+            pos += 16
+            (dur_ms,) = struct.unpack_from("<I", data, pos)
+            pos += 4
+            mode_b = data[pos]
+            pos += 1
+            mode = "Human" if mode_b == 1 else "Linear"
+            events.append({"type": "mouse_move", "x": x, "y": y, "time": t,
+                           "move_duration": int(dur_ms), "move_mode": mode})
         elif code == EvtCode.CLICK:
             x, y = struct.unpack_from("<dd", data, pos)
             pos += 16
@@ -323,77 +277,81 @@ def mmr_load(path: str) -> list[dict]:
             key, pos = _mmr_decode_key(data, pos)
             tp = "key_press" if code == EvtCode.KPRESS else "key_release"
             events.append({"type": tp, "key": key, "time": t})
+        elif code == EvtCode.LOOP_ABOVE:
+            (count,) = struct.unpack_from("<I", data, pos)
+            pos += 4
+            events.append({"type": "loop_above", "count": int(count), "time": t})
     return events
 
 
-# ---------------------------------------------------------------------------
-# Windows Registry persistence
-# ---------------------------------------------------------------------------
+def _app_data_dir() -> str:
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA", os.path.expanduser("~"))
+    elif sys.platform == "darwin":
+        base = os.path.join(
+            os.path.expanduser("~"), "Library", "Application Support")
+    else:
+        base = os.path.join(os.path.expanduser("~"), ".config")
+    d = os.path.join(base, APPDATA_SUBDIR)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _settings_path() -> str:
+    return os.path.join(_app_data_dir(), "settings.json")
+
 
 def reg_save(d: dict) -> None:
-    """Persist key-value pairs to the Windows Registry.
-
-    Args:
-        d: Mapping of string name → value to store (values converted to str).
-    """
-    try:
-        import winreg
-        k = winreg.CreateKeyEx(
-            winreg.HKEY_CURRENT_USER, REGISTRY_KEY, 0, winreg.KEY_SET_VALUE)
-        for n, v in d.items():
-            winreg.SetValueEx(k, n, 0, winreg.REG_SZ, str(v))
-        winreg.CloseKey(k)
-    except Exception:
-        pass
+    if sys.platform == "win32":
+        try:
+            import winreg
+            k = winreg.CreateKeyEx(
+                winreg.HKEY_CURRENT_USER, REGISTRY_KEY, 0, winreg.KEY_SET_VALUE)
+            for n, v in d.items():
+                winreg.SetValueEx(k, n, 0, winreg.REG_SZ, str(v))
+            winreg.CloseKey(k)
+        except Exception:
+            pass
+    else:
+        try:
+            with open(_settings_path(), "w", encoding="utf-8") as f:
+                json.dump({n: str(v) for n, v in d.items()}, f, indent=2)
+        except Exception:
+            pass
 
 
 def reg_load() -> dict:
-    """Load all values from the Windows Registry key.
+    if sys.platform == "win32":
+        try:
+            import winreg
+            k = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER, REGISTRY_KEY, 0, winreg.KEY_READ)
+            out: dict = {}
+            i = 0
+            while True:
+                try:
+                    n, v, _ = winreg.EnumValue(k, i)
+                    out[n] = v
+                    i += 1
+                except OSError:
+                    break
+            winreg.CloseKey(k)
+            return out
+        except Exception:
+            return {}
+    else:
+        try:
+            with open(_settings_path(), encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
 
-    Returns:
-        Dict of string name → string value; empty dict on any error.
-    """
-    try:
-        import winreg
-        k = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER, REGISTRY_KEY, 0, winreg.KEY_READ)
-        out: dict = {}
-        i = 0
-        while True:
-            try:
-                n, v, _ = winreg.EnumValue(k, i)
-                out[n] = v
-                i += 1
-            except OSError:
-                break
-        winreg.CloseKey(k)
-        return out
-    except Exception:
-        return {}
-
-
-# ---------------------------------------------------------------------------
-# Autosave helpers
-# ---------------------------------------------------------------------------
 
 def autosave_path() -> str:
-    """Return the path to the autosave file, creating its directory if needed.
-
-    Returns:
-        Absolute path to ``autosave.mmr``.
-    """
-    d = os.path.join(
-        os.environ.get("APPDATA", os.path.expanduser("~")), APPDATA_SUBDIR)
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, AUTOSAVE_FILENAME)
+    return os.path.join(_app_data_dir(), AUTOSAVE_FILENAME)
 
 
 def autosave(events: list[dict]) -> None:
-    """Save events to the autosave location, silently ignoring errors.
-
-    Args:
-        events: List of event dicts to persist.
-    """
     try:
         mmr_save(events, autosave_path())
     except Exception:
@@ -401,11 +359,6 @@ def autosave(events: list[dict]) -> None:
 
 
 def autoload() -> list[dict]:
-    """Load events from the autosave file if it exists and is valid.
-
-    Returns:
-        List of event dicts, or an empty list on any error.
-    """
     try:
         p = autosave_path()
         if os.path.exists(p):
@@ -417,24 +370,15 @@ def autoload() -> list[dict]:
     return []
 
 
-# ---------------------------------------------------------------------------
-# .mmr file-type icon registration
-# ---------------------------------------------------------------------------
-
 def ensure_mmr_icon(ico_b64: str) -> None:
-    """Write the .mmr filetype icon and register it in the Windows Registry.
-
-    Args:
-        ico_b64: Base64-encoded ICO data.
-    """
+    if sys.platform != "win32":
+        return
     try:
         import base64
         import winreg
         import ctypes as _ctypes
 
-        ico_dir = os.path.join(
-            os.environ.get("APPDATA", os.path.expanduser("~")), APPDATA_SUBDIR)
-        os.makedirs(ico_dir, exist_ok=True)
+        ico_dir = _app_data_dir()
         ico_path = os.path.join(ico_dir, "filetype_mmr.ico")
         ico_data = base64.b64decode(ico_b64)
         with open(ico_path, "wb") as f:
@@ -458,10 +402,6 @@ def ensure_mmr_icon(ico_b64: str) -> None:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Discord webhook
-# ---------------------------------------------------------------------------
-
 def send_webhook(
     url: str,
     user_id: str,
@@ -471,17 +411,6 @@ def send_webhook(
     show_cycles: bool = True,
     cycle_count: int = 0,
 ) -> None:
-    """Send a Discord webhook embed.
-
-    Args:
-        url:           Discord webhook URL.
-        user_id:       Discord user ID to mention (empty string to skip).
-        message:       Embed description text.
-        elapsed:       Seconds elapsed since playback started.
-        show_elapsed:  Whether to include the elapsed time field.
-        show_cycles:   Whether to include the cycle-count field.
-        cycle_count:   Number of completed playback cycles.
-    """
     try:
         import urllib.request
         import urllib.error
@@ -536,8 +465,12 @@ def send_webhook(
             },
             method="POST",
         )
+        import ssl
+        ctx = ssl.create_default_context()
+        if sys.platform == "darwin" and os.path.exists("/etc/ssl/cert.pem"):
+            ctx.load_verify_locations("/etc/ssl/cert.pem")
         try:
-            urllib.request.urlopen(req, timeout=8)
+            urllib.request.urlopen(req, timeout=8, context=ctx)
         except urllib.error.HTTPError:
             pass
     except Exception:

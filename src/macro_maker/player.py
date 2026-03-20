@@ -18,23 +18,17 @@ Full license text: See LICENSE.md
 For support: https://discord.gg/2fraBuhe3m
 """
 
-"""MacroPlayer: plays back recorded macro events in a background thread."""
-
-import ctypes
+import math
+import random
+import sys
 import threading
 import time
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from .utils.platform_helpers import INPUT, MOUSEINPUT, send_mouse_input
+from .utils.platform_helpers import get_mouse_pos, send_mouse_move, send_mouse_input
 from .utils.serialization import parse_key, send_webhook, ser_key_to_canon
-from .utils.constants import (
-    INPUT_MOUSE,
-    MOUSEEVENTF_ABSOLUTE,
-    MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_VIRTUALDESK,
-)
 
 try:
     from pynput.keyboard import Controller as KbCtrl
@@ -44,20 +38,37 @@ except ImportError:
     _OK = False
 
 
+def _expand_loops(events: list) -> list:
+    result: list = []
+    segment_start: int = 0
+    for ev in events:
+        if ev.get("type") == "loop_above":
+            count = max(1, int(ev.get("count", 1)))
+            segment = result[segment_start:]
+            if segment and count > 1:
+                t0       = segment[0]["time"]
+                t_last   = segment[-1]["time"]
+                span     = t_last - t0
+                last_end = t_last
+                for _ in range(count - 1):
+                    for seg_ev in segment:
+                        new_ev = dict(seg_ev)
+                        if span > 0:
+                            new_ev["time"] = last_end + (seg_ev["time"] - t0)
+                        result.append(new_ev)
+                    last_end += span
+            segment_start = len(result)
+        else:
+            result.append(ev)
+    return result
+
+
 def _release_all(
     kb: Optional[object],
     pressed_keys: set,
     ms: Optional[object],
     pressed_btns: set,
 ) -> None:
-    """Release all currently pressed keys and mouse buttons.
-
-    Args:
-        kb:           Keyboard controller (may be ``None``).
-        pressed_keys: Set of currently held pynput key objects.
-        ms:           Mouse controller (may be ``None``).
-        pressed_btns: Set of currently held pynput button objects.
-    """
     if kb:
         for k in list(pressed_keys):
             try:
@@ -73,12 +84,6 @@ def _release_all(
 
 
 class PlayWorker(QObject):
-    """Runs a single playback pass in the thread it is moved to.
-
-    Signals:
-        finished: Emitted when all events have been dispatched (or stopped).
-    """
-
     finished = Signal()
 
     def __init__(
@@ -91,24 +96,13 @@ class PlayWorker(QObject):
         wh_show_cycles: bool  = True,
         global_wall_start: Optional[float] = None,
     ) -> None:
-        """Initialise the worker.
-
-        Args:
-            events:            List of event dicts to replay.
-            speed:             Playback speed multiplier (>1 = faster).
-            listener:          MacroRecorder instance for echo suppression.
-            loop_count:        Current loop iteration count for webhooks.
-            wh_show_elapsed:   Include elapsed time in webhook embeds.
-            wh_show_cycles:    Include cycle count in webhook embeds.
-            global_wall_start: Wall-clock start time for elapsed calculation.
-        """
         super().__init__()
         self._ev                 = events
         self._speed              = speed
         self._listener           = listener
         self._stop_evt           = threading.Event()
-        self._kb: Optional[object] = None
-        self._ms: Optional[object] = None
+        self._kb: Optional[object] = KbCtrl() if _OK else None
+        self._ms: Optional[object] = MsCtrl() if _OK else None
         self._pkeys: set           = set()
         self._pbtns: set           = set()
         self._loop_count         = loop_count
@@ -116,21 +110,47 @@ class PlayWorker(QObject):
         self._wh_show_cycles     = wh_show_cycles
         self._global_wall_start  = global_wall_start
 
+    @staticmethod
+    def _check_accessibility() -> None:
+        if sys.platform != "darwin":
+            return
+        try:
+            import ctypes
+            _lib = ctypes.cdll.LoadLibrary(
+                "/System/Library/Frameworks/ApplicationServices.framework"
+                "/ApplicationServices"
+            )
+            _lib.AXIsProcessTrusted.restype  = ctypes.c_bool
+            _lib.AXIsProcessTrusted.argtypes = []
+            if not _lib.AXIsProcessTrusted():
+                print(
+                    "\n[MacroPlayer] *** ACCESSIBILITY PERMISSION MISSING ***\n"
+                    "  Keyboard and mouse-click playback requires Accessibility.\n"
+                    "  Open:  System Settings → Privacy & Security → Accessibility\n"
+                    "  Add your terminal app (Terminal.app / iTerm2) OR Python.\n"
+                    "  Then quit and relaunch the app.\n"
+                )
+        except Exception:
+            pass
+
     def run(self) -> None:
-        """Execute the playback loop. Called by the owning QThread."""
+        self._check_accessibility()
         if not _OK or not self._ev:
             self.finished.emit()
             return
 
-        kb = KbCtrl()
-        ms = MsCtrl()
-        self._kb = kb
-        self._ms = ms
+        events = _expand_loops(self._ev)
+        if not events:
+            self.finished.emit()
+            return
 
-        t_offset   = self._ev[0]["time"]
+        kb = self._kb
+        ms = self._ms
+
+        t_offset   = events[0]["time"]
         wall_start = time.perf_counter()
 
-        for ev in self._ev:
+        for ev in events:
             if self._stop_evt.is_set():
                 break
 
@@ -145,25 +165,47 @@ class PlayWorker(QObject):
             tp = ev["type"]
             try:
                 if tp == "mouse_move":
-                    user32 = ctypes.windll.user32
-                    sw = user32.GetSystemMetrics(78)
-                    sh = user32.GetSystemMetrics(79)
-                    ox = user32.GetSystemMetrics(76)
-                    oy = user32.GetSystemMetrics(77)
-                    ax = int((int(ev["x"]) - ox) * 65535 / sw)
-                    ay = int((int(ev["y"]) - oy) * 65535 / sh)
-                    inp = (INPUT * 1)(INPUT(
-                        type=INPUT_MOUSE,
-                        mi=MOUSEINPUT(
-                            dx=ax, dy=ay,
-                            dwFlags=(
-                                MOUSEEVENTF_MOVE
-                                | MOUSEEVENTF_ABSOLUTE
-                                | MOUSEEVENTF_VIRTUALDESK
-                            ),
-                        ),
-                    ))
-                    user32.SendInput(1, inp, ctypes.sizeof(INPUT))
+                    tx, ty = int(ev["x"]), int(ev["y"])
+                    dur_ms = float(ev.get("move_duration", 0))
+                    mode   = ev.get("move_mode", "Linear")
+                    if dur_ms <= 0:
+                        send_mouse_move(tx, ty)
+                    else:
+                        sx, sy  = get_mouse_pos()
+                        dur_s   = dur_ms / 1000.0 / self._speed
+                        steps   = max(2, int(dur_s * 120))
+                        dx, dy  = tx - sx, ty - sy
+                        dist    = math.hypot(dx, dy)
+
+                        if mode == "Human" and dist > 0:
+                            perp_x = -dy / dist
+                            perp_y =  dx / dist
+                            side   = random.choice([-1, 1])
+                            arc    = dist * random.uniform(0.04, 0.12) * side
+                            cp1x = sx + dx * 0.3 + perp_x * arc
+                            cp1y = sy + dy * 0.3 + perp_y * arc
+                            cp2x = sx + dx * 0.7 + perp_x * arc * 0.6
+                            cp2y = sy + dy * 0.7 + perp_y * arc * 0.6
+                        else:
+                            cp1x = cp1y = cp2x = cp2y = 0.0
+
+                        move_start = time.perf_counter()
+                        for i in range(1, steps + 1):
+                            if self._stop_evt.is_set():
+                                break
+                            t = i / steps
+                            if mode == "Human" and dist > 0:
+                                te = t * t * (3.0 - 2.0 * t)
+                                mt = 1.0 - te
+                                bx = mt**3*sx + 3*mt**2*te*cp1x + 3*mt*te**2*cp2x + te**3*tx
+                                by = mt**3*sy + 3*mt**2*te*cp1y + 3*mt*te**2*cp2y + te**3*ty
+                            else:
+                                bx = sx + t * dx
+                                by = sy + t * dy
+                            send_mouse_move(int(bx), int(by))
+                            sleep_d = move_start + dur_s * t - time.perf_counter()
+                            if sleep_d > 0.001:
+                                self._stop_evt.wait(timeout=sleep_d)
 
                 elif tp == "mouse_click":
                     btn_str = str(ev["button"]).lower()
@@ -234,6 +276,5 @@ class PlayWorker(QObject):
         self.finished.emit()
 
     def stop(self) -> None:
-        """Signal the worker to abort playback as soon as possible."""
         self._stop_evt.set()
         _release_all(self._kb, self._pkeys, self._ms, self._pbtns)

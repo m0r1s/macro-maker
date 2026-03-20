@@ -18,8 +18,6 @@ Full license text: See LICENSE.md
 For support: https://discord.gg/2fraBuhe3m
 """
 
-"""Custom Qt widget classes for the Moris Macro Maker UI."""
-
 import math
 from typing import Optional
 
@@ -40,16 +38,21 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QFont,
+    QFontMetrics,
     QIcon,
     QIntValidator,
     QKeySequence,
     QPainter,
     QPainterPath,
+    QPalette,
     QPen,
     QPixmap,
     QPolygon,
     QRegularExpressionValidator,
+    QTextOption,
 )
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -57,9 +60,11 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QGraphicsDropShadowEffect,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -92,7 +97,6 @@ try:
 except ImportError:
     _OK = False
 
-# Qt key → (pynput canon, display label) mapping
 _QT_KEY_SPECIAL: dict = {
     Qt.Key_Escape:    ("Key.esc",       "Esc"),
     Qt.Key_Tab:       ("Key.tab",       "Tab"),
@@ -123,22 +127,10 @@ for _fi in range(1, 24):
     if _k:
         _QT_KEY_SPECIAL[_k] = (f"Key.f{_fi}", f"F{_fi}")
 
+_SPECIAL_DISPLAY: dict = {canon: lbl for canon, lbl in _QT_KEY_SPECIAL.values()}
 
-# ---------------------------------------------------------------------------
-# Helper
-# ---------------------------------------------------------------------------
 
 def _svg_icon(svg_bytes: bytes, size: int = 16, color: str = "#52596b") -> QIcon:
-    """Create a QIcon from SVG bytes with a given stroke colour.
-
-    Args:
-        svg_bytes: Raw SVG data; ``currentColor`` is replaced by *color*.
-        size:      Square icon size in pixels.
-        color:     CSS colour string to substitute.
-
-    Returns:
-        A :class:`QIcon` at the requested size.
-    """
     colored = svg_bytes.replace(b"currentColor", color.encode())
     pix = QPixmap()
     pix.loadFromData(colored, "SVG")
@@ -146,16 +138,12 @@ def _svg_icon(svg_bytes: bytes, size: int = 16, color: str = "#52596b") -> QIcon
 
 
 def _ev_label(ev: dict) -> str:
-    """Return a short human-readable description of an event dict.
-
-    Args:
-        ev: Event dict.
-
-    Returns:
-        Descriptive string.
-    """
     tp = ev.get("type", "")
     if tp == "mouse_move":
+        dur = ev.get("move_duration", 0)
+        mode = ev.get("move_mode", "Linear")
+        if dur:
+            return f"Move  ({int(ev['x'])}, {int(ev['y'])})  {mode}  {dur}ms"
         return f"Move  ({int(ev['x'])}, {int(ev['y'])})"
     if tp == "mouse_click":
         act = "Press" if ev.get("pressed") else "Release"
@@ -164,11 +152,11 @@ def _ev_label(ev: dict) -> str:
         return f"Scroll  ({int(ev['x'])}, {int(ev['y'])})  dx={ev['dx']:.1f} dy={ev['dy']:.1f}"
     if tp == "key_press":
         k  = ev.get("key", {})
-        ch = k.get("special") or k.get("char") or "?"
+        ch = _SPECIAL_DISPLAY.get(k.get("special", "")) or k.get("char") or "?"
         return f"Key Press  {ch}"
     if tp == "key_release":
         k  = ev.get("key", {})
-        ch = k.get("special") or k.get("char") or "?"
+        ch = _SPECIAL_DISPLAY.get(k.get("special", "")) or k.get("char") or "?"
         return f"Key Release  {ch}"
     if tp == "wait":
         ms = ev.get("duration", 1.0) * 1000
@@ -177,16 +165,13 @@ def _ev_label(ev: dict) -> str:
         msg   = ev.get("message", "")
         short = msg[:24] + "\u2026" if len(msg) > 24 else msg
         return f"Webhook  {short}" if short else "Webhook"
+    if tp == "loop_above":
+        count = ev.get("count", 1)
+        return f"Loop Above  {count}\u00d7"
     return tp
 
 
-# ---------------------------------------------------------------------------
-# Widgets
-# ---------------------------------------------------------------------------
-
 class StyledSpinBox(QDoubleSpinBox):
-    """QDoubleSpinBox with custom up/down arrow painting."""
-
     def paintEvent(self, e: object) -> None:
         super().paintEvent(e)
         p = QPainter(self)
@@ -206,8 +191,6 @@ class StyledSpinBox(QDoubleSpinBox):
 
 
 class EditButton(QPushButton):
-    """Expandable "Edit Events" button with animated arrow."""
-
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("btnEdit")
@@ -221,11 +204,6 @@ class EditButton(QPushButton):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def set_expanded(self, v: bool) -> None:
-        """Animate the arrow to point right (expanded) or down (collapsed).
-
-        Args:
-            v: ``True`` to expand, ``False`` to collapse.
-        """
         self._arrow_start  = self._arrow_angle
         self._arrow_target = 90.0 if v else 0.0
         self._elapsed = QElapsedTimer()
@@ -326,8 +304,6 @@ class EditButton(QPushButton):
 
 
 class InlineEditButton(QPushButton):
-    """Small "Edit" button used inside sequence rows."""
-
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__("Edit", parent)
         self.setObjectName("btnInlineEdit")
@@ -336,8 +312,6 @@ class InlineEditButton(QPushButton):
 
 
 class PlayButton(QPushButton):
-    """Play/Stop button with dynamic label and custom painting."""
-
     def __init__(self, key_text: str, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("btnPlay")
@@ -348,20 +322,10 @@ class PlayButton(QPushButton):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
     def set_key(self, key_text: str) -> None:
-        """Update the hotkey label text.
-
-        Args:
-            key_text: New key label to display.
-        """
         self._key_text = key_text
         self.update()
 
     def set_playing(self, playing: bool) -> None:
-        """Switch the button between Play and Stop appearance.
-
-        Args:
-            playing: ``True`` when playback is active.
-        """
         self._playing = playing
         self.update()
 
@@ -441,9 +405,85 @@ class PlayButton(QPushButton):
         p.end()
 
 
-class KeyCapture(QLineEdit):
-    """Read-only line edit that captures the next key press on click."""
+class RecButton(QPushButton):
+    _COL_NORMAL = (255, 75, 105)
 
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("btnRecord")
+        self._paused = False
+
+    def set_paused(self, paused: bool) -> None:
+        self._paused = paused
+        self.update()
+
+    def paintEvent(self, _e: object) -> None:
+        from PySide6.QtWidgets import QStyleOptionButton, QStyle
+        opt = QStyleOptionButton()
+        self.initStyleOption(opt)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        enabled = self.isEnabled()
+        a       = 1.0 if enabled else 0.28
+        cr, cg, cb_v = self._COL_NORMAL
+
+        if self.isDown():
+            bg     = QColor(cr, cg, cb_v, int(0.29 * 255 * a))
+            border = QColor(cr, cg, cb_v, int(0.80 * 255 * a))
+        elif opt.state & QStyle.State_MouseOver:
+            bg     = QColor(cr, cg, cb_v, int(0.19 * 255 * a))
+            border = QColor(cr, cg, cb_v, int(0.52 * 255 * a))
+        else:
+            bg     = QColor(cr, cg, cb_v, int(0.09 * 255 * a))
+            border = QColor(cr, cg, cb_v, int(0.30 * 255 * a))
+
+        r2 = self.rect().adjusted(1, 1, -1, -1)
+        p.setPen(QPen(border, 1))
+        p.setBrush(QBrush(bg))
+        p.drawRoundedRect(r2, 10, 10)
+
+        icon_col = QColor(cr, cg, cb_v, int(255 * a))
+        label    = self.text()
+
+        font = self.font()
+        font.setPixelSize(11)
+        font.setBold(True)
+        p.setFont(font)
+        fm  = p.fontMetrics()
+        tw  = fm.horizontalAdvance(label)
+        cy  = self.height() // 2
+
+        if self._paused:
+            bar_w, bar_h, gap = 3, 9, 3
+            icon_w = bar_w + gap + bar_w
+            total  = icon_w + 6 + tw
+            ox     = (self.width() - total) // 2
+
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(icon_col))
+            p.drawRoundedRect(ox,              cy - bar_h // 2, bar_w, bar_h, 1, 1)
+            p.drawRoundedRect(ox + bar_w + gap, cy - bar_h // 2, bar_w, bar_h, 1, 1)
+
+            p.setPen(icon_col)
+            p.drawText(
+                QRect(ox + icon_w + 6, 0, tw + 2, self.height()),
+                Qt.AlignVCenter | Qt.AlignLeft,
+                label,
+            )
+        else:
+            total = tw
+            ox    = (self.width() - total) // 2
+            p.setPen(icon_col)
+            p.drawText(
+                QRect(ox, 0, tw + 2, self.height()),
+                Qt.AlignVCenter | Qt.AlignLeft,
+                label,
+            )
+        p.end()
+
+
+class KeyCapture(QLineEdit):
     key_changed = Signal(str)
 
     _MOUSE_NAMES = {
@@ -462,7 +502,6 @@ class KeyCapture(QLineEdit):
         self.setText(key)
 
     def key(self) -> str:
-        """Return the currently captured key string."""
         return self._key
 
     def _commit_capture(self, name: str) -> None:
@@ -484,8 +523,7 @@ class KeyCapture(QLineEdit):
             if name:
                 self._commit_capture(name)
             elif btn not in (Qt.LeftButton, Qt.RightButton):
-                pass  # unknown button, stay in capture mode
-            # LMB/RMB while capturing: cancel
+                pass
             else:
                 self._cancel_capture()
         else:
@@ -512,8 +550,6 @@ class KeyCapture(QLineEdit):
 
 
 class ToggleSwitch(QWidget):
-    """Animated on/off toggle widget."""
-
     toggled = Signal(bool)
 
     def __init__(
@@ -539,16 +575,9 @@ class ToggleSwitch(QWidget):
         self.update()
 
     def isChecked(self) -> bool:
-        """Return whether the switch is on."""
         return self._on
 
     def setChecked(self, v: bool, animate: bool = True) -> None:
-        """Set the switch state.
-
-        Args:
-            v:       New state.
-            animate: Whether to animate the transition.
-        """
         if v == self._on:
             return
         self._on = v
@@ -597,8 +626,6 @@ class ToggleSwitch(QWidget):
 
 
 class MinimizeBtn(QPushButton):
-    """Custom minimise button with hover painting."""
-
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("btnMin")
@@ -632,19 +659,12 @@ class MinimizeBtn(QPushButton):
 
 
 class RowExpandButton(QPushButton):
-    """Tiny triangle button used to expand/collapse sequence rows."""
-
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("btnRowExpand")
         self._expanded = False
 
     def set_expanded(self, v: bool) -> None:
-        """Update arrow direction.
-
-        Args:
-            v: ``True`` if the row is expanded.
-        """
         self._expanded = v
         self.update()
 
@@ -676,8 +696,6 @@ class RowExpandButton(QPushButton):
 
 
 class _KeyGrabber(QWidget):
-    """Invisible floating widget that captures exactly one key press."""
-
     def __init__(
         self,
         on_captured: callable,
@@ -725,12 +743,127 @@ class _KeyGrabber(QWidget):
             QTimer.singleShot(0, self._on_cancel)
 
 
-class EventRow(QWidget):
-    """Single row in the sequence editor representing one event."""
+class _PosHUD(QWidget):
+    def __init__(self) -> None:
+        super().__init__(
+            None,
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool,
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
 
+        lo = QHBoxLayout(self)
+        lo.setContentsMargins(8, 4, 8, 4)
+        self._lbl = QLabel("X: 0   Y: 0")
+        self._lbl.setStyleSheet(
+            f"color:#eef0f5; font-family:{FONT}; font-size:11px; font-weight:700;")
+        lo.addWidget(self._lbl)
+        self.setStyleSheet(
+            "QWidget { background: rgba(18,22,34,210); border-radius: 5px; }")
+        self.adjustSize()
+
+    def update_pos(self, x: int, y: int) -> None:
+        self._lbl.setText(f"X: {x}   Y: {y}")
+        self.adjustSize()
+        screen = QGuiApplication.screenAt(QPoint(x, y))
+        if screen is None:
+            screen = QGuiApplication.primaryScreen()
+        sg = screen.geometry()
+        nx = x + 18
+        ny = y - self.height() - 8
+        nx = min(nx, sg.right() - self.width())
+        ny = max(ny, sg.top())
+        self.move(nx, ny)
+
+
+class _PosGrabOverlay(QWidget):
+    captured  = Signal(int, int)
+    cancelled = Signal()
+
+    def __init__(self) -> None:
+        import sys
+        super().__init__(
+            None,
+            Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool,
+        )
+        self.setMouseTracking(True)
+        if sys.platform == "darwin":
+            self.setAttribute(Qt.WA_TranslucentBackground)
+        else:
+            self.setWindowOpacity(0.01)
+
+        vg = QGuiApplication.primaryScreen().virtualGeometry()
+        self.setGeometry(vg)
+
+        self._hud = _PosHUD()
+        self._hud.show()
+
+    def showEvent(self, e: object) -> None:
+        import sys
+        super().showEvent(e)
+        if sys.platform == "darwin":
+            QTimer.singleShot(0, self.grabMouse)
+            self.setFocus()
+
+    def mouseMoveEvent(self, e: object) -> None:
+        p = e.globalPosition().toPoint()
+        self._hud.update_pos(p.x(), p.y())
+
+    def mousePressEvent(self, e: object) -> None:
+        if e.button() == Qt.LeftButton:
+            p = e.globalPosition().toPoint()
+            self._finish()
+            self.captured.emit(p.x(), p.y())
+        elif e.button() == Qt.RightButton:
+            self._finish()
+            self.cancelled.emit()
+
+    def keyPressEvent(self, e: object) -> None:
+        if e.key() == Qt.Key_Escape:
+            self._finish()
+            self.cancelled.emit()
+
+    def _finish(self) -> None:
+        import sys
+        if sys.platform == "darwin":
+            self.releaseMouse()
+        self._hud.close()
+        self.close()
+
+
+class _GripHandle(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(16, 18)
+        self._active = False
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, False)
+
+    def set_active(self, on: bool) -> None:
+        self._active = on
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        color = QColor("#78c8ff") if self._active else QColor("#4a5068")
+        p.setBrush(color)
+        p.setPen(Qt.NoPen)
+        r = 1.0
+        cols = [6.0, 10.0]
+        rows = [5.5, 9.0, 12.5]
+        for x in cols:
+            for y in rows:
+                p.drawEllipse(QPointF(x, y), r, r)
+        p.end()
+
+
+class EventRow(QWidget):
     deleted    = Signal(int)
     changed    = Signal(int, dict)
     drag_start = Signal(int, object)
+    row_clicked = Signal(int, int)
 
     def __init__(
         self, idx: int, ev: dict, parent: Optional[QWidget] = None
@@ -739,6 +872,7 @@ class EventRow(QWidget):
         self._idx       = idx
         self._ev        = dict(ev)
         self._expanded  = False
+        self._selected  = False
         self._capturing = False
         self._kb_listener  = None
         self._key_grabber  = None
@@ -768,14 +902,11 @@ class EventRow(QWidget):
         self._t_lbl.setStyleSheet("color:#52596b; font-size:10px;")
         self._t_lbl.setFixedWidth(62)
         self._t_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        if ev.get("type") == "webhook":
+        if ev.get("type") in ("webhook", "loop_above", "wait"):
             self._t_lbl.setVisible(False)
         hdr.addWidget(self._t_lbl)
 
-        self._drag_handle = QLabel("::")
-        self._drag_handle.setFixedSize(16, 18)
-        self._drag_handle.setAlignment(Qt.AlignCenter)
-        self._drag_handle.setStyleSheet("color:#3a3f52; font-size:10px;")
+        self._drag_handle = _GripHandle()
         self._drag_handle.setCursor(Qt.OpenHandCursor)
         self._drag_handle.installEventFilter(self)
         hdr.addWidget(self._drag_handle)
@@ -785,10 +916,13 @@ class EventRow(QWidget):
         self._exp_btn.clicked.connect(self._toggle_expand)
         hdr.addWidget(self._exp_btn)
 
-        del_btn = QPushButton("\u2715")
-        del_btn.setObjectName("btnSeqDel")
-        del_btn.setFixedSize(18, 18)
-        del_btn.clicked.connect(lambda: self.deleted.emit(self._idx))
+        del_btn = QLabel("\u2715")
+        del_btn.setObjectName("btnRowDel")
+        del_btn.setFixedSize(14, 18)
+        del_btn.setAlignment(Qt.AlignCenter)
+        del_btn.setCursor(Qt.PointingHandCursor)
+        del_btn.setAttribute(Qt.WA_Hover, True)
+        del_btn.mousePressEvent = lambda e: self.deleted.emit(self._idx)
         hdr.addWidget(del_btn)
 
         self._outer.addLayout(hdr)
@@ -807,14 +941,6 @@ class EventRow(QWidget):
 
         self._outer.addWidget(self._detail)
         self._build_fields()
-        if self._ev.get("type") == "mouse_move":
-            self._exp_btn.setEnabled(False)
-            sp = self._exp_btn.sizePolicy()
-            sp.setRetainSizeWhenHidden(True)
-            self._exp_btn.setSizePolicy(sp)
-            self._exp_btn.setVisible(False)
-
-    # ------------------------------------------------------------------
 
     def _field_row(self, label: str, widget: QWidget) -> QHBoxLayout:
         r = QHBoxLayout()
@@ -856,28 +982,73 @@ class EventRow(QWidget):
     def _inline_edit_row(
         self, key: str, label_text: str, val: object, numbers_only: bool = False
     ) -> QHBoxLayout:
-        r = self._inline_row(label_text)
-        W, H = 76, 16
+        return self._build_single_row(
+            self._make_inline_widgets(key, label_text, val, numbers_only)
+        )
+
+    def _inline_label_row(
+        self, label_text: str, val: str, options: list, key: str
+    ) -> QHBoxLayout:
+        r    = self._inline_row(label_text)
+        disp = QLabel(val)
+        disp.setStyleSheet(
+            "color:#78c8ff; font-size:11px; font-weight:700; min-width:20px;")
+        btn_edit = InlineEditButton()
+        btn_edit.setFixedHeight(16)
+        btn_edit.setFixedWidth(32)
+
+        def cycle() -> None:
+            cur  = disp.text()
+            opts = list(options)
+            nxt  = (
+                opts[(opts.index(cur) + 1) % len(opts)]
+                if cur in opts
+                else opts[0]
+            )
+            disp.setText(nxt)
+            if key == "action_pressed":
+                self._ev["pressed"] = (nxt == "Press")
+            else:
+                self._ev[key] = nxt
+            self._summary.setText(_ev_label(self._ev))
+            self.changed.emit(self._idx, dict(self._ev))
+
+        btn_edit.clicked.connect(cycle)
+        r.addWidget(disp, 0, Qt.AlignVCenter)
+        r.addWidget(btn_edit, 0, Qt.AlignVCenter)
+        r.addStretch()
+        return r
+
+    def _make_inline_widgets(
+        self, key: str, label_text: str, val: object,
+        numbers_only: bool = False, on_commit=None
+    ) -> tuple:
+        H = 16
+        lbl = QLabel(label_text)
+        lbl.setFixedWidth(52)
+        lbl.setFixedHeight(H)
+        lbl.setStyleSheet("color:#7a8299; font-size:10px;")
+        lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
 
         val_stack = QStackedWidget()
-        val_stack.setFixedSize(W, H)
+        val_stack.setFixedSize(35, H)
         val_stack.setContentsMargins(0, 0, 0, 0)
 
         disp = QLabel(str(val))
-        disp.setFixedSize(W, H)
+        disp.setFixedSize(35, H)
         disp.setContentsMargins(0, 0, 0, 0)
         disp.setStyleSheet(
-            "color:#78c8ff; font-size:11px; font-weight:700;"
+            "color:#78c8ff; font-size:10px; font-weight:700;"
             " background: transparent; padding: 0; margin: 0;")
         disp.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         val_stack.addWidget(disp)
 
         edit = QLineEdit(str(val))
-        edit.setFixedSize(W, H)
+        edit.setFixedSize(35, H)
         edit.setContentsMargins(0, 0, 0, 0)
         edit.setStyleSheet(
             "QLineEdit { background: transparent; border: none; outline: none;"
-            " color: #78c8ff; font-size: 11px; font-weight: 700; padding: 0; margin: 0; }")
+            " color: #78c8ff; font-size: 10px; font-weight: 700; padding: 0; margin: 0; }")
         edit.setTextMargins(-2, 0, 0, 0)
         edit.setFrame(False)
         if numbers_only:
@@ -910,11 +1081,15 @@ class EventRow(QWidget):
             edit.deselect()
             v = edit.text()
             try:
-                stored = int(v) if numbers_only else v
-                self._ev[key] = stored
-                disp.setText(str(stored))
-                self._summary.setText(_ev_label(self._ev))
-                self.changed.emit(self._idx, dict(self._ev))
+                if on_commit is not None:
+                    display = on_commit(v)
+                    disp.setText(display)
+                else:
+                    stored = int(v) if numbers_only else v
+                    self._ev[key] = stored
+                    disp.setText(str(stored))
+                    self._summary.setText(_ev_label(self._ev))
+                    self.changed.emit(self._idx, dict(self._ev))
             except Exception:
                 pass
             val_stack.setCurrentIndex(0)
@@ -925,43 +1100,237 @@ class EventRow(QWidget):
         btn_done.mousePressEvent = lambda e: commit()
         edit.returnPressed.connect(commit)
         edit.focusOutEvent = lambda e: (QLineEdit.focusOutEvent(edit, e), commit())
-        r.addWidget(val_stack, 0, Qt.AlignVCenter)
-        r.addWidget(btn_stack, 0, Qt.AlignVCenter)
-        r.addStretch()
-        return r
 
-    def _inline_label_row(
-        self, label_text: str, val: str, options: list, key: str
-    ) -> QHBoxLayout:
-        r    = self._inline_row(label_text)
+        return lbl, val_stack, btn_stack
+
+    def _build_combined_row(self, left: tuple, right: tuple) -> QHBoxLayout:
+        l_lbl, l_val, l_btn = left
+        r_lbl, r_val, r_btn = right
+        fm = l_lbl.fontMetrics()
+        bw = fm.horizontalAdvance("Edit") + 6
+
+        label_w = fm.horizontalAdvance("Dur") + 2
+        std_val_w = fm.horizontalAdvance("0.000s") + 4
+
+        l_lbl.setFixedWidth(label_w)
+        r_lbl.setFixedWidth(label_w)
+
+        for stack, fallback_w in ((l_val, std_val_w), (r_val, std_val_w)):
+            w = max(stack.minimumWidth(), fallback_w)
+            stack.setFixedWidth(w)
+            for i in range(stack.count()):
+                stack.widget(i).setFixedWidth(w)
+
+        for stack in (l_btn, r_btn):
+            stack.setFixedWidth(bw)
+            for i in range(stack.count()):
+                stack.widget(i).setFixedWidth(bw)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(l_lbl, 0, Qt.AlignVCenter)
+        row.addWidget(l_val, 0, Qt.AlignVCenter)
+        row.addWidget(l_btn, 0, Qt.AlignVCenter)
+        sep = QFrame()
+        sep.setFixedSize(1, 14)
+        sep.setStyleSheet("background: rgba(255,255,255,0.35);")
+        row.addWidget(sep, 0, Qt.AlignVCenter)
+        row.addWidget(r_lbl, 0, Qt.AlignVCenter)
+        row.addWidget(r_val, 0, Qt.AlignVCenter)
+        row.addWidget(r_btn, 0, Qt.AlignVCenter)
+        row.addStretch()
+        return row
+
+    def _build_single_row(self, widgets: tuple) -> QHBoxLayout:
+        lbl, val_stack, btn_stack = widgets
+        fm = lbl.fontMetrics()
+        bw    = fm.horizontalAdvance("Edit") + 6
+        val_w = max(val_stack.minimumWidth(), fm.horizontalAdvance("0.000s") + 4)
+        lbl.setFixedWidth(fm.horizontalAdvance("Dur") + 2)
+        val_stack.setFixedWidth(val_w)
+        for i in range(val_stack.count()):
+            val_stack.widget(i).setFixedWidth(val_w)
+        btn_stack.setFixedWidth(bw)
+        for i in range(btn_stack.count()):
+            btn_stack.widget(i).setFixedWidth(bw)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(lbl, 0, Qt.AlignVCenter)
+        row.addWidget(val_stack, 0, Qt.AlignVCenter)
+        row.addWidget(btn_stack, 0, Qt.AlignVCenter)
+        row.addStretch()
+        return row
+
+    def _webhook_message_row(self, key: str) -> QHBoxLayout:
+        H = 16
+
+        _vfont = QFont()
+        _vfont.setPixelSize(11)
+        _vfont.setBold(True)
+        _fm = QFontMetrics(_vfont)
+
+        def _text_w(text: str) -> int:
+            return max(30, _fm.horizontalAdvance(text) + 6)
+
+        val = str(self._ev.get(key, ""))
+
+        row_l = self._inline_row("Message")
+        row_l.setSpacing(3)
+        _row_lbl = row_l.itemAt(0).widget()
+        if _row_lbl:
+            row_l.setAlignment(_row_lbl, Qt.AlignTop)
+
         disp = QLabel(val)
+        disp.setWordWrap(True)
+        disp.setFixedWidth(max(44, _text_w(val)))
         disp.setStyleSheet(
-            "color:#78c8ff; font-size:11px; font-weight:700; min-width:60px;")
-        btn_edit = InlineEditButton()
-        btn_edit.setFixedHeight(16)
-        btn_edit.setFixedWidth(32)
+            "color:#78c8ff; font-size:11px; font-weight:700;"
+            " background:transparent; padding:0; margin:0;")
+        disp.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        row_l.addWidget(disp, 0, Qt.AlignTop)
 
-        def cycle() -> None:
-            cur  = disp.text()
-            opts = list(options)
-            nxt  = (
-                opts[(opts.index(cur) + 1) % len(opts)]
-                if cur in opts
-                else opts[0]
-            )
-            disp.setText(nxt)
-            if key == "action_pressed":
-                self._ev["pressed"] = (nxt == "Press")
+        edit = QPlainTextEdit(val)
+        edit.setFixedHeight(H + 2)
+        edit.setFrameShape(QFrame.NoFrame)
+        edit.setLineWrapMode(QPlainTextEdit.WidgetWidth)
+        edit.setWordWrapMode(QTextOption.WrapAnywhere)
+        edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        edit.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        edit.document().setDocumentMargin(0)
+        edit.setStyleSheet(
+            "QPlainTextEdit { background:transparent; border:none; outline:none;"
+            " color:#78c8ff; font-size:11px; font-weight:700; padding:0; margin:0; }")
+        _vp_pal = edit.viewport().palette()
+        _vp_pal.setColor(QPalette.ColorRole.Base, QColor(0, 0, 0, 0))
+        edit.viewport().setPalette(_vp_pal)
+        edit.viewport().setAutoFillBackground(False)
+        btn_edit = InlineEditButton()
+        btn_edit.setFixedSize(36, H)
+        row_l.addWidget(btn_edit, 0, Qt.AlignTop)
+
+        edit.hide()
+        row_l.addWidget(edit, 0, Qt.AlignTop)
+
+        btn_done = QLabel("Close")
+        btn_done.setObjectName("btnSeqClose")
+        btn_done.setFixedSize(36, H)
+        btn_done.setAlignment(Qt.AlignCenter)
+        btn_done.setCursor(Qt.PointingHandCursor)
+        btn_done.setAttribute(Qt.WA_Hover, True)
+        btn_done.hide()
+        row_l.addWidget(btn_done, 0, Qt.AlignTop)
+
+        row_l.addStretch()
+
+        _editing = [False]
+
+        def _update_disp_size() -> None:
+            avail_w = max(44, self._fields_w.width() - 94)
+            text = disp.text()
+            tw = _text_w(text)
+            if tw <= avail_w:
+                disp.setFixedWidth(tw)
+                disp.setFixedHeight(H + 2)
             else:
-                self._ev[key] = nxt
+                disp.setFixedWidth(avail_w)
+                rect = disp.fontMetrics().boundingRect(
+                    QRect(0, 0, avail_w, 10000),
+                    Qt.TextWordWrap | Qt.AlignLeft, text)
+                disp.setFixedHeight(max(H + 2, rect.height() + 2))
+            row_l.activate()
+            self._fields_l.invalidate()
+            self._fields_w.updateGeometry()
+
+        def _update_edit_size() -> None:
+            if not _editing[0]:
+                return
+            avail_w = max(44, self._fields_w.width() - 94)
+            text = edit.toPlainText()
+            tw   = _text_w(text)
+            if tw <= avail_w and "\n" not in text:
+                edit.document().setTextWidth(-1)
+                edit.setFixedWidth(tw)
+                edit.setFixedHeight(H + 2)
+                row_l.activate()
+                self._fields_l.invalidate()
+                self._fields_w.updateGeometry()
+            else:
+                edit.setFixedWidth(avail_w)
+                edit.document().setTextWidth(avail_w)
+                def _apply_height() -> None:
+                    if not _editing[0]:
+                        return
+                    line_h = _fm.lineSpacing()
+                    paragraphs = edit.toPlainText().split('\n')
+                    total_lines = 0
+                    for para in paragraphs:
+                        if not para:
+                            total_lines += 1
+                        else:
+                            rect = _fm.boundingRect(
+                                QRect(0, 0, avail_w, 10000),
+                                Qt.TextWrapAnywhere, para)
+                            total_lines += max(1, (rect.height() + line_h - 1) // line_h)
+                    doc_h = total_lines * line_h
+                    h = max(H + 2, doc_h + 4)
+                    edit.setFixedHeight(h)
+                    row_l.activate()
+                    self._fields_l.invalidate()
+                    self._fields_w.updateGeometry()
+                QTimer.singleShot(0, _apply_height)
+
+        def start() -> None:
+            _editing[0] = True
+            edit.setFixedWidth(disp.width())
+            edit.setFixedHeight(disp.height())
+            disp.hide()
+            btn_edit.hide()
+            edit.show()
+            btn_done.show()
+            edit.blockSignals(True)
+            edit.setPlainText(str(self._ev.get(key, "")))
+            edit.blockSignals(False)
+            edit.setFocus()
+            QTimer.singleShot(0, _update_edit_size)
+
+        def commit() -> None:
+            if not _editing[0]:
+                return
+            _editing[0] = False
+            v = edit.toPlainText()
+            self._ev[key] = v
+            disp.setText(v)
+            edit.hide()
+            btn_done.hide()
+            disp.show()
+            btn_edit.show()
+            _update_disp_size()
             self._summary.setText(_ev_label(self._ev))
             self.changed.emit(self._idx, dict(self._ev))
+            self.setFocus()
 
-        btn_edit.clicked.connect(cycle)
-        r.addWidget(disp, 0, Qt.AlignVCenter)
-        r.addWidget(btn_edit, 0, Qt.AlignVCenter)
-        r.addStretch()
-        return r
+        def _on_key_press(e: object) -> None:
+            if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+                if e.modifiers() & Qt.ShiftModifier:
+                    QPlainTextEdit.keyPressEvent(edit, e)
+                else:
+                    commit()
+            else:
+                QPlainTextEdit.keyPressEvent(edit, e)
+
+        def _on_focus_out(e: object) -> None:
+            QPlainTextEdit.focusOutEvent(edit, e)
+            QTimer.singleShot(0, lambda: commit() if not edit.hasFocus() else None)
+
+        edit.textChanged.connect(_update_edit_size)
+        edit.keyPressEvent = _on_key_press
+        edit.focusOutEvent = _on_focus_out
+        btn_edit.clicked.connect(start)
+        btn_done.mousePressEvent = lambda e: commit()
+        QTimer.singleShot(0, _update_disp_size)
+        return row_l
 
     def _build_fields(self) -> None:
         while self._fields_l.count():
@@ -984,42 +1353,113 @@ class EventRow(QWidget):
 
         tp = self._ev.get("type", "mouse_click")
         self._field_widgets: dict = {}
+        _row_q: list = []
 
-        def add(key: str, label: str, val: object, numbers_only: bool = False) -> None:
-            e = self._make_edit(val, numbers_only=numbers_only)
-            self._field_widgets[key] = e
-            self._fields_l.addLayout(self._field_row(label, e))
-            e.textChanged.connect(lambda _, k=key: self._field_changed(k))
+        def enqueue(key: str, label: str, val: object,
+                    numbers_only: bool = False, on_commit=None) -> None:
+            widgets = self._make_inline_widgets(key, label, val, numbers_only, on_commit)
+            if _row_q:
+                self._fields_l.addLayout(self._build_combined_row(_row_q.pop(), widgets))
+            else:
+                _row_q.append(widgets)
+
+        def flush() -> None:
+            while _row_q:
+                self._fields_l.addLayout(self._build_single_row(_row_q.pop()))
+
+        if tp == "mouse_move" and not self._ev.get("recorded"):
+            for key, label in (("x", "X"), ("y", "Y")):
+                val = int(self._ev.get(key, 0))
+                enqueue(key, label, str(val), numbers_only=True)
+
+            xy_row = self._fields_l.itemAt(self._fields_l.count() - 1).layout()
+            stretch_idx = xy_row.count() - 1
+
+            vsep = QFrame()
+            vsep.setFixedSize(1, 14)
+            vsep.setStyleSheet("background: rgba(255,255,255,0.35);")
+            xy_row.insertWidget(stretch_idx, vsep, 0, Qt.AlignVCenter)
+            stretch_idx += 1
+
+            set_pos_btn = InlineEditButton()
+            set_pos_btn.setText("Set Pos")
+            set_pos_btn.setFixedHeight(16)
+
+            def _start_pos_grab() -> None:
+                self._pos_overlay = _PosGrabOverlay()
+
+                def _on_captured(cx: int, cy: int) -> None:
+                    self._ev["x"] = cx
+                    self._ev["y"] = cy
+                    self._summary.setText(_ev_label(self._ev))
+                    self.changed.emit(self._idx, dict(self._ev))
+                    self._build_fields()
+
+                self._pos_overlay.captured.connect(_on_captured)
+                self._pos_overlay.show()
+                self._pos_overlay.activateWindow()
+
+            set_pos_btn.clicked.connect(_start_pos_grab)
+            xy_row.insertWidget(stretch_idx, set_pos_btn, 0, Qt.AlignVCenter)
 
         if tp in ("mouse_click", "mouse_scroll"):
             for key, label in (("x", "X"), ("y", "Y")):
                 val = int(self._ev.get(key, 0))
-                self._fields_l.addLayout(
-                    self._inline_edit_row(key, label, str(val), numbers_only=True))
+                enqueue(key, label, str(val), numbers_only=True)
+
+        if tp == "mouse_click":
+            xy_row = self._fields_l.itemAt(self._fields_l.count() - 1).layout()
+            stretch_idx = xy_row.count() - 1
+
+            vsep = QFrame()
+            vsep.setFixedSize(1, 14)
+            vsep.setStyleSheet("background: rgba(255,255,255,0.35);")
+            xy_row.insertWidget(stretch_idx, vsep, 0, Qt.AlignVCenter)
+            stretch_idx += 1
+
+            set_pos_btn = InlineEditButton()
+            set_pos_btn.setText("Set Pos")
+            set_pos_btn.setFixedHeight(16)
+
+            def _start_click_pos_grab() -> None:
+                self._click_pos_overlay = _PosGrabOverlay()
+
+                def _on_click_captured(cx: int, cy: int) -> None:
+                    self._ev["x"] = cx
+                    self._ev["y"] = cy
+                    self._summary.setText(_ev_label(self._ev))
+                    self.changed.emit(self._idx, dict(self._ev))
+                    self._build_fields()
+
+                self._click_pos_overlay.captured.connect(_on_click_captured)
+                self._click_pos_overlay.show()
+                self._click_pos_overlay.activateWindow()
+
+            set_pos_btn.clicked.connect(_start_click_pos_grab)
+            xy_row.insertWidget(stretch_idx, set_pos_btn, 0, Qt.AlignVCenter)
 
         if tp == "mouse_scroll":
             for key, label in (("dx", "dX"), ("dy", "dY")):
                 val = self._ev.get(key, 0)
-                self._fields_l.addLayout(
-                    self._inline_edit_row(key, label, str(val), numbers_only=True))
+                enqueue(key, label, str(val), numbers_only=True)
 
         if tp in ("key_press", "key_release"):
             k   = self._ev.get("key", {})
-            cur = k.get("special") or k.get("char") or "?"
+            cur = _SPECIAL_DISPLAY.get(k.get("special", "")) or k.get("char") or "?"
 
             key_val_stack = QStackedWidget()
-            key_val_stack.setFixedSize(76, 16)
+            key_val_stack.setFixedSize(35, 16)
             key_val_stack.setContentsMargins(0, 0, 0, 0)
             self._key_lbl = QLabel(cur)
-            self._key_lbl.setFixedSize(76, 16)
+            self._key_lbl.setFixedSize(35, 16)
             self._key_lbl.setContentsMargins(0, 0, 0, 0)
             self._key_lbl.setStyleSheet(
-                "color:#78c8ff; font-size:11px; font-weight:700;"
+                "color:#78c8ff; font-size:10px; font-weight:700;"
                 " background: transparent; padding: 0; margin: 0;")
             self._key_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
             key_val_stack.addWidget(self._key_lbl)
-            self._key_capturing_lbl = QLabel("Press a key\u2026")
-            self._key_capturing_lbl.setFixedSize(76, 16)
+            self._key_capturing_lbl = QLabel("Press\u2026")
+            self._key_capturing_lbl.setFixedSize(35, 16)
             self._key_capturing_lbl.setContentsMargins(0, 0, 0, 0)
             self._key_capturing_lbl.setStyleSheet(
                 "color:#52596b; font-size:10px; background: transparent;"
@@ -1052,40 +1492,109 @@ class EventRow(QWidget):
             lbl.setFixedHeight(16)
             lbl.setStyleSheet("color:#7a8299; font-size:10px;")
             lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-            row.addWidget(lbl, 0, Qt.AlignVCenter)
-            row.addWidget(key_val_stack, 0, Qt.AlignVCenter)
-            row.addWidget(key_btn_stack, 0, Qt.AlignVCenter)
-            row.addStretch()
-            self._fields_l.addLayout(row)
+            _row_q.append((lbl, key_val_stack, key_btn_stack))
 
         if tp == "wait":
-            ms = self._ev.get("duration", 1.0) * 1000
-            add("duration_ms", "Duration", int(ms), numbers_only=True)
-            self._field_widgets["duration_ms"].textChanged.connect(
-                lambda v: self._ms_changed(v))
+            def _dur_commit(v: str) -> str:
+                dur = max(0.0, float(v))
+                self._ev["duration"] = dur
+                self._summary.setText(_ev_label(self._ev))
+                self.changed.emit(self._idx, dict(self._ev))
+                return f"{dur:.3f}"
+            enqueue("duration", "Dur",
+                    f"{self._ev.get('duration', 1.0):.3f}", on_commit=_dur_commit)
 
-        if tp == "webhook":
-            self._fields_l.addLayout(
-                self._inline_edit_row(
-                    "message", "Message",
-                    self._ev.get("message", ""), numbers_only=False))
-
-        if tp == "webhook":
+        if tp == "wait":
+            flush()
             return
 
+        if tp == "webhook":
+            self._fields_l.addLayout(self._webhook_message_row("message"))
+            return
+
+        if tp == "loop_above":
+            def _count_commit(v: str) -> str:
+                try:
+                    count = max(1, int(float(v)))
+                except ValueError:
+                    count = 1
+                self._ev["count"] = count
+                self._summary.setText(_ev_label(self._ev))
+                self.changed.emit(self._idx, dict(self._ev))
+                return str(count)
+            enqueue("count", "Times", str(self._ev.get("count", 1)),
+                    numbers_only=True, on_commit=_count_commit)
+            flush()
+            return
+
+        if tp == "mouse_move" and not self._ev.get("recorded"):
+            def _dur_ms_commit(v: str) -> str:
+                try:
+                    ms = max(0, int(float(v)))
+                except ValueError:
+                    ms = 0
+                self._ev["move_duration"] = ms
+                self._summary.setText(_ev_label(self._ev))
+                self.changed.emit(self._idx, dict(self._ev))
+                return str(ms)
+
+            dur_widgets = self._make_inline_widgets(
+                "move_duration", "Dur",
+                str(self._ev.get("move_duration", 0)),
+                numbers_only=True, on_commit=_dur_ms_commit)
+
+            _modes = ("Linear", "Human")
+            mode_lbl = QLabel("Mode")
+            mode_lbl.setFixedHeight(16)
+            mode_lbl.setStyleSheet("color:#7a8299; font-size:10px;")
+            mode_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+
+            mode_val_stack = QStackedWidget()
+            mode_val_stack.setContentsMargins(0, 0, 0, 0)
+            self._mode_val_lbl = QLabel(self._ev.get("move_mode", "Linear"))
+            self._mode_val_lbl.setFixedHeight(16)
+            self._mode_val_lbl.setContentsMargins(0, 0, 0, 0)
+            self._mode_val_lbl.setStyleSheet(
+                "color:#78c8ff; font-size:10px; font-weight:700;"
+                " background:transparent; padding:0; margin:0;")
+            self._mode_val_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            mode_val_stack.addWidget(self._mode_val_lbl)
+
+            mode_btn_stack = QStackedWidget()
+            mode_btn_stack.setFixedSize(18, 16)
+            mode_btn_stack.setContentsMargins(0, 0, 0, 0)
+            mode_cycle_btn = QPushButton("\u203a")
+            mode_cycle_btn.setObjectName("btnExpand")
+            mode_cycle_btn.setFixedSize(18, 16)
+            mode_cycle_btn.setCursor(Qt.PointingHandCursor)
+
+            def _cycle_mode() -> None:
+                cur = self._mode_val_lbl.text()
+                nxt = _modes[((_modes.index(cur) if cur in _modes else 0) + 1) % len(_modes)]
+                self._mode_val_lbl.setText(nxt)
+                self._ev["move_mode"] = nxt
+                self._summary.setText(_ev_label(self._ev))
+                self.changed.emit(self._idx, dict(self._ev))
+
+            mode_cycle_btn.clicked.connect(_cycle_mode)
+            mode_btn_stack.addWidget(mode_cycle_btn)
+
+            self._fields_l.addLayout(
+                self._build_combined_row(dur_widgets, (mode_lbl, mode_val_stack, mode_btn_stack)))
+
         t_val_stack = QStackedWidget()
-        t_val_stack.setFixedSize(76, 16)
+        t_val_stack.setFixedSize(35, 16)
         t_val_stack.setContentsMargins(0, 0, 0, 0)
         self._time_disp_lbl = QLabel(f"{self._ev.get('time', 0.0):.3f}s")
-        self._time_disp_lbl.setFixedSize(76, 16)
+        self._time_disp_lbl.setFixedSize(35, 16)
         self._time_disp_lbl.setContentsMargins(0, 0, 0, 0)
         self._time_disp_lbl.setStyleSheet(
-            "color:#78c8ff; font-size:11px; font-weight:700;"
+            "color:#78c8ff; font-size:10px; font-weight:700;"
             " background: transparent; padding: 0; margin: 0;")
         self._time_disp_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
         t_val_stack.addWidget(self._time_disp_lbl)
         self._time_edit_field = QLineEdit(f"{self._ev.get('time', 0.0):.3f}")
-        self._time_edit_field.setFixedSize(76, 16)
+        self._time_edit_field.setFixedSize(35, 16)
         self._time_edit_field.setContentsMargins(0, 0, 0, 0)
         self._time_edit_field.setValidator(
             QRegularExpressionValidator(QRegularExpression(r"[0-9]*\.?[0-9]*")))
@@ -1120,18 +1629,15 @@ class EventRow(QWidget):
         self._t_val_stack = t_val_stack
         self._t_btn_stack = t_btn_stack
 
-        t_row = QHBoxLayout()
-        t_row.setSpacing(6)
-        t_lbl = QLabel("Time")
-        t_lbl.setFixedWidth(52)
-        t_lbl.setFixedHeight(16)
-        t_lbl.setStyleSheet("color:#7a8299; font-size:10px;")
-        t_lbl.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-        t_row.addWidget(t_lbl, 0, Qt.AlignVCenter)
-        t_row.addWidget(t_val_stack, 0, Qt.AlignVCenter)
-        t_row.addWidget(t_btn_stack, 0, Qt.AlignVCenter)
-        t_row.addStretch()
-        self._fields_l.addLayout(t_row)
+        t_widgets = (QLabel("Time"), t_val_stack, t_btn_stack)
+        t_widgets[0].setFixedWidth(52)
+        t_widgets[0].setFixedHeight(16)
+        t_widgets[0].setStyleSheet("color:#7a8299; font-size:10px;")
+        t_widgets[0].setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        if _row_q:
+            self._fields_l.addLayout(self._build_combined_row(_row_q.pop(), t_widgets))
+        else:
+            self._fields_l.addLayout(self._build_single_row(t_widgets))
 
     def _start_time_edit(self) -> None:
         self._time_edit_field.setText(f"{self._ev.get('time', 0.0):.3f}")
@@ -1230,23 +1736,35 @@ class EventRow(QWidget):
         except Exception:
             pass
 
+    def _refresh_style(self) -> None:
+        if self._expanded:
+            name = "seqRowSelected"
+        elif self._selected:
+            name = "seqRowSel"
+        else:
+            name = "seqRow"
+        self.setObjectName(name)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def set_selected(self, selected: bool) -> None:
+        self._selected = selected
+        self._refresh_style()
+
     def _toggle_expand(self) -> None:
         self._expanded = not self._expanded
         self._detail.setVisible(self._expanded)
         self._exp_btn.set_expanded(self._expanded)
-        self.setObjectName("seqRowSel" if self._expanded else "seqRow")
-        self.style().unpolish(self)
-        self.style().polish(self)
+        self._refresh_style()
 
     def mousePressEvent(self, e: object) -> None:
-        if e.button() == Qt.LeftButton and self._ev.get("type") != "mouse_move":
-            self._toggle_expand()
+        if e.button() == Qt.LeftButton:
+            self.row_clicked.emit(self._idx, e.modifiers().value)
 
     def eventFilter(self, obj: object, e: object) -> bool:
         if obj is self._drag_handle and e.type() == QEvent.MouseButtonPress:
             if e.button() == Qt.LeftButton:
-                self._drag_handle.setStyleSheet(
-                    "color:#78c8ff; font-size:10px;")
+                self._drag_handle.set_active(True)
                 self._drag_handle.setCursor(Qt.ClosedHandCursor)
                 self.drag_start.emit(self._idx, e.globalPosition().toPoint())
                 return True
@@ -1255,30 +1773,16 @@ class EventRow(QWidget):
         return super().eventFilter(obj, e)
 
     def set_dragging(self, on: bool) -> None:
-        """Toggle drag-handle highlight.
-
-        Args:
-            on: ``True`` while dragging.
-        """
-        self._drag_handle.setStyleSheet(
-            "color:#78c8ff; font-size:10px;"
-            if on else "color:#3a3f52; font-size:10px;")
+        self._drag_handle.set_active(on)
         self._drag_handle.setCursor(
             Qt.ClosedHandCursor if on else Qt.OpenHandCursor)
 
     def update_index(self, idx: int) -> None:
-        """Update the displayed row number.
-
-        Args:
-            idx: Zero-based event index.
-        """
         self._idx = idx
         self._idx_lbl.setText(f"{idx+1:>3}.")
 
 
 class _ResizeHandle(QWidget):
-    """Draggable resize handle painted as a row of dots."""
-
     resize_press   = Signal(object)
     resize_move    = Signal(object)
     resize_release = Signal()

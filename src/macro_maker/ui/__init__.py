@@ -18,4 +18,3 @@ Full license text: See LICENSE.md
 For support: https://discord.gg/2fraBuhe3m
 """
 
-"""UI subpackage: styles, widgets, and main window."""

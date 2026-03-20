@@ -18,15 +18,15 @@ Full license text: See LICENSE.md
 For support: https://discord.gg/2fraBuhe3m
 """
 
-"""MainWindow and all dialog classes for the Moris Macro Maker UI."""
-
 import base64
 import os
+import sys
 from typing import Optional
 
 from PySide6.QtCore import (
     QByteArray,
     QEasingCurve,
+    QPoint,
     QPropertyAnimation,
     QSize,
     Qt,
@@ -86,6 +86,7 @@ from .widgets import (
     KeyCapture,
     MinimizeBtn,
     PlayButton,
+    RecButton,
     _ResizeHandle,
     _ev_label,
     _norm_key,
@@ -102,175 +103,273 @@ except ImportError:
     _OK = False
 
 
-# ---------------------------------------------------------------------------
-# Helper dialogs
-# ---------------------------------------------------------------------------
+class _TypeDropdown(QWidget):
+    changed = Signal(int)
+
+    _LABELS = [
+        "Key Press", "Mouse Click",
+        "Mouse Move", "Mouse Scroll", "Webhook",
+        "Loop Above",
+    ]
+
+    def __init__(self, parent: QWidget = None) -> None:
+        super().__init__(parent)
+        self._idx = -1
+        lo = QHBoxLayout(self)
+        lo.setContentsMargins(0, 0, 0, 0)
+        lo.setSpacing(0)
+        self._btn = QPushButton("Select type  \u25be")
+        self._btn.setObjectName("btnTypeDropdown")
+        self._btn.setFixedHeight(26)
+        self._btn.setCursor(Qt.PointingHandCursor)
+        self._btn.clicked.connect(self._open_popup)
+        lo.addWidget(self._btn)
+
+    def currentIndex(self) -> int:
+        return self._idx
+
+    def _open_popup(self) -> None:
+        popup = QWidget(None, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        popup.setAttribute(Qt.WA_TranslucentBackground, True)
+        outer_lo = QVBoxLayout(popup)
+        outer_lo.setContentsMargins(0, 0, 0, 0)
+
+        inner = QFrame()
+        inner.setObjectName("typePopupInner")
+        inner.setAttribute(Qt.WA_StyledBackground, True)
+        ilo = QVBoxLayout(inner)
+        ilo.setContentsMargins(5, 5, 5, 5)
+        ilo.setSpacing(2)
+
+        for i, label in enumerate(self._LABELS):
+            opt = QPushButton(label)
+            opt.setObjectName(
+                "btnTypeOptionSel" if i == self._idx else "btnTypeOption")
+            opt.setFixedHeight(26)
+            opt.setCursor(Qt.PointingHandCursor)
+            opt.clicked.connect(
+                lambda _=None, idx=i: (self._select(idx), popup.close()))
+            ilo.addWidget(opt)
+
+        outer_lo.addWidget(inner)
+        gpos = self._btn.mapToGlobal(QPoint(0, self._btn.height() + 3))
+        popup.move(gpos)
+        popup.show()
+        popup.adjustSize()
+
+    def _select(self, idx: int) -> None:
+        self._idx = idx
+        self._btn.setText(f"{self._LABELS[idx]}  \u25be")
+        self.changed.emit(idx)
+
+
+_QT_TO_PYNPUT: dict = {
+    "Return": "Key.enter", "Enter": "Key.enter",
+    "Space": "Key.space", "Backspace": "Key.backspace",
+    "Tab": "Key.tab", "Escape": "Key.esc",
+    "Delete": "Key.delete", "Insert": "Key.insert",
+    "Home": "Key.home", "End": "Key.end",
+    "PgUp": "Key.page_up", "PgDown": "Key.page_down",
+    "Up": "Key.up", "Down": "Key.down",
+    "Left": "Key.left", "Right": "Key.right",
+    "Shift": "Key.shift", "Ctrl": "Key.ctrl", "Alt": "Key.alt",
+    "Meta": "Key.cmd", "CapsLock": "Key.caps_lock",
+    **{f"F{i}": f"Key.f{i}" for i in range(1, 13)},
+}
+
+
+def _qt_key_to_norm(s: str) -> dict:
+    if s in _QT_TO_PYNPUT:
+        return {"special": _QT_TO_PYNPUT[s]}
+    if len(s) == 1:
+        return {"char": s.lower(), "vk": None}
+    return {"special": s}
+
 
 class AddInputDialog(QDialog):
-    """Dialog for inserting a new input event into the sequence."""
+    pos_preview = Signal(int)
 
-    _key_signal = Signal(dict, str)
-
-    def __init__(self, parent: QWidget, n_events: int) -> None:
+    def __init__(self, parent: QWidget, n_events: int = 0) -> None:
         super().__init__(parent)
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._drag: Optional[object] = None
+        self._n_events = n_events
         self.result_event: Optional[dict] = None
-        self.result_pos:   Optional[int]  = None
-        self._captured_key: Optional[dict] = None
-        self._kb_listener = None
-        self._capturing   = False
-        self._key_signal.connect(self._on_key_captured_signal, Qt.QueuedConnection)
+        self.result_pos: int = n_events
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setContentsMargins(12, 12, 12, 18)
 
-        frame = QFrame()
-        frame.setObjectName("dlgFrame")
-        frame.setAttribute(Qt.WA_StyledBackground, True)
+        container = QWidget()
+        container.setObjectName("mainContainer")
+        container.setAttribute(Qt.WA_StyledBackground, True)
         sh = QGraphicsDropShadowEffect()
-        sh.setBlurRadius(30)
-        sh.setColor(QColor(0, 0, 0, 180))
-        sh.setOffset(0, 8)
-        frame.setGraphicsEffect(sh)
-        outer.addWidget(frame)
+        sh.setBlurRadius(40)
+        sh.setColor(QColor(0, 0, 0, 200))
+        sh.setOffset(0, 10)
+        container.setGraphicsEffect(sh)
+        outer.addWidget(container)
 
-        fl = QVBoxLayout(frame)
-        fl.setContentsMargins(16, 14, 16, 16)
-        fl.setSpacing(0)
+        root = QVBoxLayout(container)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        title = QLabel("Add Input")
-        title.setStyleSheet("font-size:12px; font-weight:700; color:#eef0f5;")
-        fl.addWidget(title)
-        fl.addSpacing(10)
+        tb = QWidget()
+        tb.setObjectName("titleBar")
+        tb.setAttribute(Qt.WA_StyledBackground, True)
+        tb.setFixedHeight(34)
+        tbl = QHBoxLayout(tb)
+        tbl.setContentsMargins(12, 0, 8, 0)
+        tbl.setSpacing(4)
+        _ico_data = base64.b64decode(LOGO_B64)
+        _pix = QPixmap()
+        _pix.loadFromData(_ico_data)
+        logo_lbl = QLabel()
+        logo_lbl.setPixmap(
+            _pix.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        logo_lbl.setFixedSize(16, 16)
+        tbl.addWidget(logo_lbl)
+        tbl.addSpacing(5)
+        ttl = QLabel("Add Input")
+        ttl.setStyleSheet(
+            f"font-family:{FONT}; font-size:11px; font-weight:700; color:#eef0f5;")
+        tbl.addWidget(ttl)
+        tbl.addStretch()
+        xb = QPushButton("\u2715")
+        xb.setObjectName("btnClose")
+        xb.setFixedSize(22, 22)
+        xb.clicked.connect(self._on_cancel)
+        tbl.addWidget(xb)
 
-        sep = QFrame()
-        sep.setObjectName("sep")
-        sep.setFixedHeight(1)
-        fl.addWidget(sep)
-        fl.addSpacing(10)
+        def _tb_press(e: object) -> None:
+            if e.button() == Qt.LeftButton:
+                self._drag = (
+                    e.globalPosition().toPoint() - self.frameGeometry().topLeft())
 
-        from PySide6.QtWidgets import QComboBox
-        type_row = QHBoxLayout()
-        type_row.setSpacing(0)
+        def _tb_move(e: object) -> None:
+            if self._drag and e.buttons() == Qt.LeftButton:
+                self.move(e.globalPosition().toPoint() - self._drag)
+
+        def _tb_release(e: object) -> None:
+            self._drag = None
+
+        tb.mousePressEvent   = _tb_press
+        tb.mouseMoveEvent    = _tb_move
+        tb.mouseReleaseEvent = _tb_release
+        root.addWidget(tb)
+
+        sep0 = QFrame()
+        sep0.setObjectName("sep")
+        sep0.setFixedHeight(1)
+        root.addWidget(sep0)
+
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(14, 12, 14, 14)
+        bl.setSpacing(8)
+        root.addWidget(body)
+
+        type_card = QWidget()
+        type_card.setObjectName("settingsCard")
+        type_card.setAttribute(Qt.WA_StyledBackground, True)
+        tc = QHBoxLayout(type_card)
+        tc.setContentsMargins(12, 8, 12, 8)
+        tc.setSpacing(0)
         type_lbl = QLabel("Type")
-        type_lbl.setFixedWidth(76)
-        type_lbl.setStyleSheet("color:#7a8299; font-size:11px;")
-        type_row.addWidget(type_lbl)
-        self._type_combo = QComboBox()
-        self._type_combo.addItems([
-            "Key Press", "Key Release", "Mouse Click",
-            "Mouse Move", "Mouse Scroll", "Webhook",
-        ])
-        self._type_combo.setFixedHeight(22)
-        self._type_combo.setMinimumWidth(130)
-        type_row.addWidget(self._type_combo)
-        type_row.addStretch()
-        fl.addLayout(type_row)
-        fl.addSpacing(10)
+        type_lbl.setStyleSheet(
+            f"font-family:{FONT}; font-size:11px; color:#7a8299;")
+        tc.addWidget(type_lbl)
+        tc.addStretch()
+        self._type_combo = _TypeDropdown()
+        self._type_combo.changed.connect(self._rebuild_fields)
+        tc.addWidget(self._type_combo)
+        bl.addWidget(type_card)
 
-        sep2 = QFrame()
-        sep2.setObjectName("sep")
-        sep2.setFixedHeight(1)
-        fl.addWidget(sep2)
-        fl.addSpacing(8)
+        self._fields_card = QWidget()
+        self._fields_card.setObjectName("settingsCard")
+        self._fields_card.setAttribute(Qt.WA_StyledBackground, True)
+        self._fields_card.setVisible(False)
+        self._fields_layout = QVBoxLayout(self._fields_card)
+        self._fields_layout.setContentsMargins(12, 10, 12, 10)
+        self._fields_layout.setSpacing(8)
+        bl.addWidget(self._fields_card)
 
-        self._fields_widget = QWidget()
-        self._fields_layout = QVBoxLayout(self._fields_widget)
-        self._fields_layout.setContentsMargins(0, 0, 0, 0)
-        self._fields_layout.setSpacing(7)
-        fl.addWidget(self._fields_widget)
-
-        fl.addSpacing(8)
-        sep3 = QFrame()
-        sep3.setObjectName("sep")
-        sep3.setFixedHeight(1)
-        fl.addWidget(sep3)
-        fl.addSpacing(10)
-
-        pos_row = QHBoxLayout()
-        pos_row.setSpacing(0)
-        pos_lbl = QLabel("Insert after")
-        pos_lbl.setFixedWidth(76)
-        pos_lbl.setStyleSheet("color:#7a8299; font-size:11px;")
-        pos_row.addWidget(pos_lbl)
+        ins_card = QWidget()
+        ins_card.setObjectName("settingsCard")
+        ins_card.setAttribute(Qt.WA_StyledBackground, True)
+        ic = QHBoxLayout(ins_card)
+        ic.setContentsMargins(12, 8, 12, 8)
+        ic.setSpacing(0)
+        ins_lbl = QLabel("Insert after")
+        ins_lbl.setStyleSheet(
+            f"font-family:{FONT}; font-size:11px; color:#7a8299;")
+        ic.addWidget(ins_lbl)
+        ic.addStretch()
         self._pos_edit = QLineEdit(str(n_events))
-        self._pos_edit.setStyleSheet(
-            "QLineEdit { background: transparent; border: none;"
-            " border-bottom: 1px solid rgba(255,255,255,0.13);"
-            " color: #eef0f5; font-size: 11px; padding: 1px 2px; }")
-        self._pos_edit.setFixedWidth(50)
-        self._pos_edit.setFixedHeight(18)
-        self._pos_edit.setPlaceholderText("end")
-        self._n_events = n_events
-        pos_row.addWidget(self._pos_edit)
-        pos_row.addStretch()
-        fl.addLayout(pos_row)
-        fl.addSpacing(12)
+        self._pos_edit.setObjectName("keyInput")
+        self._pos_edit.setFixedSize(50, 24)
+        self._pos_edit.setAlignment(Qt.AlignCenter)
+        self._pos_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"[0-9]*")))
+        self._pos_edit.textChanged.connect(self._emit_pos_preview)
+        ic.addWidget(self._pos_edit)
+        self._ins_card = ins_card
+        self._ins_card.setVisible(False)
+        bl.addWidget(ins_card)
 
         btn_row = QHBoxLayout()
-        btn_row.addStretch()
+        btn_row.setSpacing(8)
         cancel = QPushButton("Cancel")
-        cancel.setObjectName("btnImport")
-        cancel.setFixedHeight(26)
-        cancel.setFixedWidth(70)
+        cancel.setObjectName("btnRecord")
+        cancel.setFixedHeight(28)
         cancel.clicked.connect(self._on_cancel)
         btn_row.addWidget(cancel)
-        btn_row.addSpacing(6)
-        ok = QPushButton("Add")
-        ok.setObjectName("btnRecord")
-        ok.setFixedHeight(26)
-        ok.setFixedWidth(70)
-        ok.clicked.connect(self._on_ok)
-        btn_row.addWidget(ok)
-        btn_row.addStretch()
-        fl.addLayout(btn_row)
-
-        self._type_combo.currentIndexChanged.connect(self._rebuild_fields)
-        self._rebuild_fields()
+        self._ok_btn = QPushButton("Add")
+        self._ok_btn.setObjectName("btnImport")
+        self._ok_btn.setFixedHeight(28)
+        self._ok_btn.setVisible(False)
+        self._ok_btn.clicked.connect(self._on_ok)
+        btn_row.addWidget(self._ok_btn)
+        bl.addLayout(btn_row)
 
     def _row(self, label_text: str, *widgets: QWidget) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(8)
         lbl = QLabel(label_text)
         lbl.setFixedWidth(68)
-        lbl.setStyleSheet("color:#7a8299; font-size:11px;")
+        lbl.setStyleSheet(
+            f"font-family:{FONT}; font-size:11px; color:#7a8299;")
         row.addWidget(lbl)
+        row.addStretch()
         for w in widgets:
             row.addWidget(w)
-        row.addStretch()
         return row
 
     def _plain_edit(self, val: str = "0", numeric: bool = False) -> QLineEdit:
         e = QLineEdit(val)
-        e.setStyleSheet(
-            "QLineEdit { background: transparent; border: none;"
-            " border-bottom: 1px solid rgba(255,255,255,0.13);"
-            " color: #eef0f5; font-size: 11px; padding: 1px 2px; }")
-        e.setFixedWidth(70)
-        e.setFixedHeight(18)
+        e.setObjectName("keyInput")
+        e.setFixedSize(70, 24)
+        e.setAlignment(Qt.AlignCenter)
         if numeric:
             e.setValidator(
                 QRegularExpressionValidator(
                     QRegularExpression(r"[0-9]*\.?[0-9]*")))
         return e
 
-    def _cycle_btn(
-        self, options: list, key_attr: str
-    ) -> tuple:
+    def _cycle_btn(self, options: list, key_attr: str) -> tuple:
         lbl = QLabel(options[0])
-        lbl.setStyleSheet("color:#78c8ff; font-size:11px; font-weight:700;")
+        lbl.setStyleSheet(
+            f"font-family:{FONT}; color:#78c8ff; font-size:11px; font-weight:700;")
         btn = QPushButton("\u203a")
         btn.setObjectName("btnExpand")
-        btn.setFixedSize(16, 16)
+        btn.setFixedSize(18, 18)
 
         def cycle() -> None:
             cur = lbl.text()
             nxt = (
                 options[(options.index(cur) + 1) % len(options)]
-                if cur in options
-                else options[0]
+                if cur in options else options[0]
             )
             lbl.setText(nxt)
             setattr(self, key_attr, nxt)
@@ -280,52 +379,60 @@ class AddInputDialog(QDialog):
         return lbl, btn
 
     def _clear_fields(self) -> None:
-        self._stop_capture()
         while self._fields_layout.count():
             item = self._fields_layout.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                item.widget().hide()
+                item.widget().setParent(None)
             elif item.layout():
                 while item.layout().count():
                     sub = item.layout().takeAt(0)
                     if sub.widget():
-                        sub.widget().deleteLater()
+                        sub.widget().hide()
+                        sub.widget().setParent(None)
 
-    def _rebuild_fields(self) -> None:
+    def _rebuild_fields(self, idx: int = -1) -> None:
         self._clear_fields()
-        self._captured_key = None
-        idx = self._type_combo.currentIndex()
 
-        if idx in (0, 1):
-            self._key_display = QLabel("\u2014")
-            self._key_display.setStyleSheet(
-                "color:#78c8ff; font-size:11px; font-weight:700; min-width:50px;")
-            self._key_cap_btn = QPushButton("Capture")
-            self._key_cap_btn.setObjectName("btnExpand")
-            self._key_cap_btn.setFixedHeight(16)
-            self._key_cap_btn.setMinimumWidth(54)
-            self._key_cap_btn.clicked.connect(self._start_key_capture)
-            self._fields_layout.addLayout(
-                self._row("Key", self._key_display, self._key_cap_btn))
+        if idx == -1:
+            self._fields_card.setVisible(False)
+            self._ins_card.setVisible(False)
+            self._ok_btn.setVisible(False)
+            QTimer.singleShot(0, lambda: self.resize(self.minimumSizeHint()))
+            return
 
-        elif idx == 2:
+        self._fields_card.setVisible(True)
+        self._ins_card.setVisible(True)
+        self._ok_btn.setVisible(True)
+        self._emit_pos_preview(self._pos_edit.text())
+
+        if idx == 0:
+            self._key_capture = KeyCapture()
+            self._key_capture.setFixedSize(70, 26)
+            act_lbl, act_cycle = self._cycle_btn(
+                ["Press", "Release"], "_key_act_val")
+            self._fields_layout.addLayout(self._row("Key", self._key_capture))
+            self._fields_layout.addLayout(self._row("Action", act_lbl, act_cycle))
+
+        elif idx == 1:
             self._click_x = self._plain_edit("0", numeric=True)
             self._click_y = self._plain_edit("0", numeric=True)
             self._fields_layout.addLayout(self._row("X", self._click_x))
             self._fields_layout.addLayout(self._row("Y", self._click_y))
             btn_lbl, btn_cycle = self._cycle_btn(
                 ["Left", "Right", "Middle"], "_click_btn_val")
-            act_lbl, act_cycle = self._cycle_btn(["Press", "Release"], "_click_act_val")
+            act_lbl, act_cycle = self._cycle_btn(
+                ["Press", "Release"], "_click_act_val")
             self._fields_layout.addLayout(self._row("Button", btn_lbl, btn_cycle))
             self._fields_layout.addLayout(self._row("Action", act_lbl, act_cycle))
 
-        elif idx == 3:
+        elif idx == 2:
             self._move_x = self._plain_edit("0", numeric=True)
             self._move_y = self._plain_edit("0", numeric=True)
             self._fields_layout.addLayout(self._row("X", self._move_x))
             self._fields_layout.addLayout(self._row("Y", self._move_y))
 
-        elif idx == 4:
+        elif idx == 3:
             self._scroll_x  = self._plain_edit("0", numeric=True)
             self._scroll_y  = self._plain_edit("0", numeric=True)
             self._scroll_dx = self._plain_edit("0", numeric=True)
@@ -335,7 +442,7 @@ class AddInputDialog(QDialog):
             self._fields_layout.addLayout(self._row("dX", self._scroll_dx))
             self._fields_layout.addLayout(self._row("dY", self._scroll_dy))
 
-        if idx == 5:
+        elif idx == 4:
             self._wh_stored_url = ""
             try:
                 cfg = reg_load()
@@ -343,98 +450,54 @@ class AddInputDialog(QDialog):
             except Exception:
                 pass
             self._wh_msg_edit = QLineEdit()
-            self._wh_msg_edit.setPlaceholderText("")
             self._wh_msg_edit.setObjectName("keyInput")
-            self._wh_msg_edit.setFixedHeight(22)
+            self._wh_msg_edit.setFixedHeight(24)
             self._wh_msg_edit.setFixedWidth(140)
             self._fields_layout.addLayout(
                 self._row("Message", self._wh_msg_edit))
 
-        if idx != 5:
+        elif idx == 5:
+            self._loop_count_edit = self._plain_edit("1", numeric=True)
+            self._fields_layout.addLayout(self._row("Times", self._loop_count_edit))
+
+        if idx not in (4, 5):
             self._time_edit = self._plain_edit("0.000", numeric=True)
             self._fields_layout.addLayout(self._row("Time (s)", self._time_edit))
-        self.adjustSize()
 
-    def _start_key_capture(self) -> None:
-        if self._capturing:
-            return
-        self._capturing = True
-        self._key_cap_btn.setText("Press a key\u2026")
-        self._key_cap_btn.setEnabled(False)
-        self._key_display.setText("\u2014")
-        self.adjustSize()
-        self.setFocus()
-        QTimer.singleShot(200, self._actually_start_listener)
+        QTimer.singleShot(0, lambda: self.resize(self.minimumSizeHint()))
 
-    def _actually_start_listener(self) -> None:
-        if not self._capturing:
-            return
-
-        def on_press(key: object) -> bool:
-            if not self._capturing:
-                return False
-            k_dict = _norm_key(key)
-            if k_dict.get("special"):
-                display = k_dict["special"].replace("Key.", "").capitalize()
-            elif k_dict.get("char"):
-                display = k_dict["char"]
-            else:
-                display = "?"
-            self._key_signal.emit(k_dict, display)
-            return False
-
-        if not _OK:
-            return
-        self._kb_listener = _kb.Listener(on_press=on_press)
-        self._kb_listener.daemon = True
-        self._kb_listener.start()
-
-    def _on_key_captured_signal(self, k_dict: dict, display: str) -> None:
-        self._stop_capture()
-        self._captured_key = k_dict
-        self._key_display.setText(display)
-        self._key_cap_btn.setText("Capture")
-        self._key_cap_btn.setEnabled(True)
-        self.adjustSize()
-        QTimer.singleShot(50, self._clean_time_field)
-
-    def _clean_time_field(self) -> None:
-        txt     = self._time_edit.text()
-        cleaned = "".join(c for c in txt if c.isdigit() or c == ".")
-        parts   = cleaned.split(".")
-        if len(parts) > 2:
-            cleaned = parts[0] + "." + "".join(parts[1:])
-        self._time_edit.setText(cleaned if cleaned else "0.000")
-        self._time_edit.clearFocus()
-        self.setFocus()
-
-    def _stop_capture(self) -> None:
-        self._capturing = False
-        if self._kb_listener:
-            try:
-                self._kb_listener.stop()
-            except Exception:
-                pass
-            self._kb_listener = None
+    def _emit_pos_preview(self, text: str = "") -> None:
+        try:
+            pos = max(0, min(self._n_events, int(text or "0")))
+        except ValueError:
+            pos = self._n_events
+        self.pos_preview.emit(pos)
 
     def _on_cancel(self) -> None:
-        self._stop_capture()
         self.reject()
 
     def _on_ok(self) -> None:
         idx = self._type_combo.currentIndex()
+        if idx == -1:
+            return
         try:
-            t = float(self._time_edit.text()) if idx != 5 else 0.0
+            t = float(self._time_edit.text()) if idx not in (4, 5) else 0.0
         except Exception:
             t = 0.0
 
-        if idx in (0, 1):
-            if not self._captured_key:
+        if idx == 0:
+            key_str = getattr(self, "_key_capture", None)
+            if not key_str or not key_str.key():
                 return
-            tp = "key_press" if idx == 0 else "key_release"
-            self.result_event = {"type": tp, "key": self._captured_key, "time": t}
+            action = getattr(self, "_key_act_val", "Press")
+            tp = "key_press" if action == "Press" else "key_release"
+            self.result_event = {
+                "type": tp,
+                "key":  _qt_key_to_norm(key_str.key()),
+                "time": t,
+            }
 
-        elif idx == 2:
+        elif idx == 1:
             try:
                 x = int(self._click_x.text())
                 y = int(self._click_y.text())
@@ -447,7 +510,7 @@ class AddInputDialog(QDialog):
                 "button": btn, "pressed": pressed, "time": t,
             }
 
-        elif idx == 3:
+        elif idx == 2:
             try:
                 x = int(self._move_x.text())
                 y = int(self._move_y.text())
@@ -455,7 +518,7 @@ class AddInputDialog(QDialog):
                 return
             self.result_event = {"type": "mouse_move", "x": x, "y": y, "time": t}
 
-        elif idx == 4:
+        elif idx == 3:
             try:
                 x  = int(self._scroll_x.text())
                 y  = int(self._scroll_y.text())
@@ -468,7 +531,7 @@ class AddInputDialog(QDialog):
                 "dx": dx, "dy": dy, "time": t,
             }
 
-        elif idx == 5:
+        elif idx == 4:
             url_val = getattr(self, "_wh_stored_url", "")
             if not url_val:
                 return
@@ -481,47 +544,46 @@ class AddInputDialog(QDialog):
                 "time":    0.0,
             }
 
-        self._stop_capture()
+        elif idx == 5:
+            try:
+                count = max(1, int(float(
+                    getattr(self, "_loop_count_edit", None).text() or "1")))
+            except Exception:
+                count = 1
+            self.result_event = {"type": "loop_above", "count": count, "time": 0.0}
+
         try:
-            pos = int(self._pos_edit.text())
-            pos = max(0, min(pos, self._n_events))
+            self.result_pos = max(
+                0, min(self._n_events, int(self._pos_edit.text() or "0")))
         except ValueError:
-            pos = self._n_events
-        self.result_pos = pos
+            self.result_pos = self._n_events
         self.accept()
 
     def closeEvent(self, e: object) -> None:
-        self._stop_capture()
         super().closeEvent(e)
 
     def mousePressEvent(self, e: object) -> None:
-        if e.button() == Qt.LeftButton:
-            self._drag = (
-                e.globalPosition().toPoint() - self.frameGeometry().topLeft())
-            focused = self.focusWidget()
-            if focused and isinstance(focused, QLineEdit):
-                focused.clearFocus()
-                self.setFocus()
+        focused = self.focusWidget()
+        if focused and isinstance(focused, QLineEdit):
+            focused.clearFocus()
+            self.setFocus()
 
     def mouseMoveEvent(self, e: object) -> None:
-        if self._drag and e.buttons() == Qt.LeftButton:
-            self.move(e.globalPosition().toPoint() - self._drag)
+        pass
 
     def mouseReleaseEvent(self, e: object) -> None:
-        self._drag = None
+        pass
 
 
 class WaitDialog(QDialog):
-    """Dialog for inserting a Wait event into the sequence."""
-
-    def __init__(self, parent: QWidget, n_events: int) -> None:
+    def __init__(self, parent: QWidget, n_events: int = 0) -> None:
         super().__init__(parent)
-        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self._drag: Optional[object] = None
-        self.result_ms:  Optional[float] = None
-        self.result_pos: Optional[int]   = None
         self._n_events = n_events
+        self.result_ms: Optional[float] = None
+        self.result_pos: int = n_events
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
@@ -582,12 +644,12 @@ class WaitDialog(QDialog):
         fl.addWidget(sep2)
         fl.addSpacing(10)
 
-        pos_row = QHBoxLayout()
-        pos_row.setSpacing(0)
-        pos_lbl = QLabel("Insert after")
-        pos_lbl.setFixedWidth(76)
-        pos_lbl.setStyleSheet("color:#7a8299; font-size:11px;")
-        pos_row.addWidget(pos_lbl)
+        ins_row = QHBoxLayout()
+        ins_row.setSpacing(0)
+        ins_lbl = QLabel("Insert after")
+        ins_lbl.setFixedWidth(76)
+        ins_lbl.setStyleSheet("color:#7a8299; font-size:11px;")
+        ins_row.addWidget(ins_lbl)
         self._pos_edit = QLineEdit(str(n_events))
         self._pos_edit.setStyleSheet(
             "QLineEdit { background: transparent; border: none;"
@@ -595,11 +657,19 @@ class WaitDialog(QDialog):
             " color: #eef0f5; font-size: 11px; padding: 1px 2px; }")
         self._pos_edit.setFixedWidth(50)
         self._pos_edit.setFixedHeight(18)
-        self._pos_edit.setPlaceholderText("end")
-        pos_row.addWidget(self._pos_edit)
-        pos_row.addStretch()
-        fl.addLayout(pos_row)
-        fl.addSpacing(12)
+        self._pos_edit.setAlignment(Qt.AlignCenter)
+        self._pos_edit.setValidator(
+            QRegularExpressionValidator(QRegularExpression(r"[0-9]*")))
+        ins_row.addWidget(self._pos_edit)
+        ins_row.addStretch()
+        fl.addLayout(ins_row)
+
+        fl.addSpacing(8)
+        sep3 = QFrame()
+        sep3.setObjectName("sep")
+        sep3.setFixedHeight(1)
+        fl.addWidget(sep3)
+        fl.addSpacing(10)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -621,9 +691,12 @@ class WaitDialog(QDialog):
 
     def _on_ok(self) -> None:
         try:
-            self.result_ms  = max(0, float(self._ms_edit.text() or "0"))
-            pos_text        = self._pos_edit.text().strip()
-            self.result_pos = int(pos_text) if pos_text.isdigit() else self._n_events
+            self.result_ms = max(0, float(self._ms_edit.text() or "0"))
+            try:
+                self.result_pos = max(
+                    0, min(self._n_events, int(self._pos_edit.text() or "0")))
+            except ValueError:
+                self.result_pos = self._n_events
             self.accept()
         except ValueError:
             pass
@@ -646,8 +719,6 @@ class WaitDialog(QDialog):
 
 
 class SettingsDlg(QDialog):
-    """Settings dialog for speed, loop, hotkeys, and webhook config."""
-
     setting_changed = Signal(str, object)
 
     def __init__(
@@ -740,18 +811,34 @@ class SettingsDlg(QDialog):
         body = QWidget()
         body.setObjectName("settingsBody")
         bl = QVBoxLayout(body)
-        bl.setContentsMargins(16, 14, 16, 16)
-        bl.setSpacing(0)
+        bl.setContentsMargins(14, 12, 14, 2)
+        bl.setSpacing(8)
         root.addWidget(body)
 
-        bl.addWidget(self._cap("PLAYBACK SPEED"))
-        bl.addSpacing(8)
+        spd_card = self._card()
+        sc = QVBoxLayout(spd_card)
+        sc.setContentsMargins(12, 10, 12, 10)
+        sc.setSpacing(8)
+        sc.addWidget(self._cap("PLAYBACK SPEED"))
         sr = QHBoxLayout()
         sr.setSpacing(0)
         hint = QLabel("Playback speed")
         hint.setStyleSheet(
             f"font-family:{FONT}; font-size:12px; color:#eef0f5;")
         sr.addWidget(hint)
+        sr.addSpacing(10)
+        for _spd_val, _spd_lbl in ((1.0, "1×"), (2.0, "2×"), (3.0, "3×")):
+            _btn = QPushButton(_spd_lbl)
+            _btn.setObjectName("btnSpeedPreset")
+            _btn.setFixedSize(28, 26)
+            _btn.setCursor(Qt.PointingHandCursor)
+            _btn.clicked.connect(
+                lambda _=False, v=_spd_val: (
+                    self.speed.setText(f"{v:.1f}"),
+                    self.setting_changed.emit("speed", v),
+                ))
+            sr.addWidget(_btn)
+            sr.addSpacing(4)
         sr.addStretch()
         self.speed = QLineEdit(f"{speed:.1f}")
         self.speed.setObjectName("keyInput")
@@ -769,13 +856,14 @@ class SettingsDlg(QDialog):
 
         self.speed.textChanged.connect(_speed_changed)
         sr.addWidget(self.speed)
-        bl.addLayout(sr)
-        bl.addSpacing(14)
-        bl.addWidget(self._sep())
-        bl.addSpacing(12)
+        sc.addLayout(sr)
+        bl.addWidget(spd_card)
 
-        bl.addWidget(self._cap("LOOP OPTIONS"))
-        bl.addSpacing(8)
+        loop_card = self._card()
+        lc = QVBoxLayout(loop_card)
+        lc.setContentsMargins(12, 10, 12, 10)
+        lc.setSpacing(7)
+        lc.addWidget(self._cap("LOOP OPTIONS"))
 
         loop_row = QHBoxLayout()
         loop_row.setSpacing(0)
@@ -790,8 +878,7 @@ class SettingsDlg(QDialog):
             f"font-family:{FONT}; font-size:12px; font-weight:400; color:#eef0f5;")
         loop_row.addWidget(loop_lbl, 0, Qt.AlignVCenter)
         loop_row.addStretch()
-        bl.addLayout(loop_row)
-        bl.addSpacing(7)
+        lc.addLayout(loop_row)
 
         ln_row = QHBoxLayout()
         ln_row.setSpacing(0)
@@ -825,8 +912,7 @@ class SettingsDlg(QDialog):
 
         self.loop_n_edit.textChanged.connect(_on_loop_n_change)
         ln_row.addWidget(self.loop_n_edit, 0, Qt.AlignVCenter)
-        bl.addLayout(ln_row)
-        bl.addSpacing(7)
+        lc.addLayout(ln_row)
 
         tr = QHBoxLayout()
         tr.setSpacing(0)
@@ -858,7 +944,7 @@ class SettingsDlg(QDialog):
 
         self.interval.textChanged.connect(_on_interval_change)
         tr.addWidget(self.interval, 0, Qt.AlignVCenter)
-        bl.addLayout(tr)
+        lc.addLayout(tr)
 
         def _mutex_loop(others):
             def handler(v: bool) -> None:
@@ -873,31 +959,44 @@ class SettingsDlg(QDialog):
             _mutex_loop([self.loop_cb, self.loop_t_cb]))
         self.loop_t_cb.toggled.connect(
             _mutex_loop([self.loop_cb, self.loop_count_cb]))
+        bl.addWidget(loop_card)
 
-        bl.addSpacing(14)
-        bl.addWidget(self._sep())
-        bl.addSpacing(12)
+        hot_card = self._card()
+        hc = QVBoxLayout(hot_card)
+        hc.setContentsMargins(12, 10, 12, 10)
+        hc.setSpacing(7)
+        hc.addWidget(self._cap("HOTKEYS"))
 
-        bl.addWidget(self._cap("HOTKEYS"))
-        bl.addSpacing(8)
-        for lbl_text, key_val, attr_name, sig_key in [
-            ("Record / Stop", rec_key,  "rec_edit",  "rec_key"),
-            ("Play / Stop",   play_key, "play_edit", "play_key"),
-        ]:
-            hr2 = QHBoxLayout()
-            hr2.setSpacing(0)
+        hr_both = QHBoxLayout()
+        hr_both.setSpacing(0)
+        hr_both.setAlignment(Qt.AlignVCenter)
+        for i, (lbl_text, key_val, attr_name, sig_key) in enumerate([
+            ("Record",   rec_key,  "rec_edit",  "rec_key"),
+            ("Playback", play_key, "play_edit", "play_key"),
+        ]):
+            if i == 1:
+                div = QFrame()
+                div.setFrameShape(QFrame.VLine)
+                div.setFixedWidth(1)
+                div.setStyleSheet(
+                    "background: rgba(255,255,255,0.09); border: none;"
+                    " margin-top: 2px; margin-bottom: 2px;")
+                hr_both.addSpacing(10)
+                hr_both.addWidget(div)
+                hr_both.addSpacing(10)
+            pair = QHBoxLayout()
+            pair.setSpacing(6)
             lb = QLabel(lbl_text)
             lb.setStyleSheet(
                 f"font-family:{FONT}; font-size:12px; color:#eef0f5;")
-            hr2.addWidget(lb)
-            hr2.addStretch()
+            pair.addWidget(lb)
             edit = KeyCapture(key_val)
             edit.key_changed.connect(
                 lambda v, k=sig_key: self.setting_changed.emit(k, v))
             setattr(self, attr_name, edit)
-            hr2.addWidget(edit)
-            bl.addLayout(hr2)
-            bl.addSpacing(7)
+            pair.addWidget(edit)
+            hr_both.addLayout(pair)
+        hc.addLayout(hr_both)
 
         def _dedup_keys(other_edit: object, clear_sig: str) -> object:
             def handler(v: str) -> None:
@@ -911,13 +1010,13 @@ class SettingsDlg(QDialog):
             _dedup_keys(self.play_edit, "play_key"))
         self.play_edit.key_changed.connect(
             _dedup_keys(self.rec_edit, "rec_key"))
+        bl.addWidget(hot_card)
 
-        bl.addSpacing(7)
-        bl.addWidget(self._sep())
-        bl.addSpacing(12)
-
-        bl.addWidget(self._cap("DISCORD WEBHOOK"))
-        bl.addSpacing(8)
+        wh_card = self._card()
+        wc = QVBoxLayout(wh_card)
+        wc.setContentsMargins(12, 10, 12, 10)
+        wc.setSpacing(8)
+        wc.addWidget(self._cap("DISCORD WEBHOOK"))
 
         wh_url_r = QHBoxLayout()
         wh_url_r.setContentsMargins(0, 0, 0, 0)
@@ -969,8 +1068,7 @@ class SettingsDlg(QDialog):
 
         self.wh_url_edit.focusInEvent  = _wh_focus_in
         self.wh_url_edit.focusOutEvent = _wh_focus_out
-        bl.addLayout(wh_url_r)
-        bl.addSpacing(10)
+        wc.addLayout(wh_url_r)
 
         elapsed_row = QHBoxLayout()
         elapsed_row.setSpacing(12)
@@ -984,8 +1082,7 @@ class SettingsDlg(QDialog):
         elapsed_row.addWidget(self.wh_elapsed_sw)
         elapsed_row.addWidget(elapsed_lbl)
         elapsed_row.addStretch()
-        bl.addLayout(elapsed_row)
-        bl.addSpacing(8)
+        wc.addLayout(elapsed_row)
 
         cycles_row = QHBoxLayout()
         cycles_row.setSpacing(12)
@@ -999,10 +1096,11 @@ class SettingsDlg(QDialog):
         cycles_row.addWidget(self.wh_cycles_sw)
         cycles_row.addWidget(cycles_lbl)
         cycles_row.addStretch()
-        bl.addLayout(cycles_row)
-        bl.addSpacing(14)
-        bl.addWidget(self._sep())
-        bl.addSpacing(12)
+        wc.addLayout(cycles_row)
+        bl.addWidget(wh_card)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
 
         discord_btn = QPushButton("Discord")
         discord_btn.setObjectName("btnDiscord")
@@ -1011,7 +1109,48 @@ class SettingsDlg(QDialog):
         discord_btn.clicked.connect(
             lambda: QDesktopServices.openUrl(
                 QUrl("https://discord.com/invite/2fraBuhe3m")))
-        bl.addWidget(discord_btn)
+        btn_row.addWidget(discord_btn)
+
+        guide_btn = QPushButton("Guide")
+        guide_btn.setObjectName("btnGuide")
+        guide_btn.setFixedHeight(30)
+        guide_btn.setCursor(Qt.PointingHandCursor)
+        guide_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(
+                QUrl("https://moris.software/guides/macromaker")))
+        btn_row.addWidget(guide_btn)
+
+        lbl_style = (
+            f"font-family:{FONT}; font-size:10px; color:#3a3f4d;"
+            " margin-top: 1px;")
+
+        credits_lbl = QLabel("Made with \u2665 by moris and tim")
+        credits_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        credits_lbl.setStyleSheet(lbl_style)
+
+        version_lbl = QLabel("v1.1.0")
+        version_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        version_lbl.setStyleSheet(lbl_style)
+
+        footer_row = QHBoxLayout()
+        footer_row.setSpacing(0)
+        footer_row.setContentsMargins(0, 0, 0, 0)
+        footer_row.addWidget(credits_lbl)
+        footer_row.addStretch()
+        footer_row.addWidget(version_lbl)
+
+        bottom = QVBoxLayout()
+        bottom.setSpacing(0)
+        bottom.setContentsMargins(0, 0, 0, 0)
+        bottom.addLayout(btn_row)
+        bottom.addLayout(footer_row)
+        bl.addLayout(bottom)
+
+    def _card(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("settingsCard")
+        w.setAttribute(Qt.WA_StyledBackground, True)
+        return w
 
     def _sep(self) -> QFrame:
         f = QFrame()
@@ -1046,13 +1185,8 @@ class SettingsDlg(QDialog):
         pass
 
 
-# ---------------------------------------------------------------------------
-# TitleBar
-# ---------------------------------------------------------------------------
 
 class TitleBar(QWidget):
-    """Custom frameless title bar with pin, cog, minimise, and close buttons."""
-
     pin_toggled = Signal(bool)
     cog_clicked = Signal()
 
@@ -1135,21 +1269,40 @@ class TitleBar(QWidget):
         self._drag = None
 
 
-# ---------------------------------------------------------------------------
-# Sequence Panel
-# ---------------------------------------------------------------------------
+class _InsertPreview(QWidget):
+    def __init__(self, parent: QWidget = None) -> None:
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def paintEvent(self, _: object) -> None:
+        from PySide6.QtGui import QPainter, QPen, QColor, QPainterPath
+        from PySide6.QtCore import QRectF
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        path = QPainterPath()
+        path.addRoundedRect(r, 5, 5)
+        p.fillPath(path, QColor(120, 200, 255, 12))
+        pen = QPen(QColor(120, 200, 255, 110))
+        pen.setWidthF(1.0)
+        pen.setDashPattern([4, 4])
+        p.setPen(pen)
+        p.drawPath(path)
+        p.end()
+
 
 class SequencePanel(QWidget):
-    """Scrollable list of EventRow widgets with drag-to-reorder support."""
-
     events_changed = Signal(list)
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setObjectName("seqPanel")
         self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setFocusPolicy(Qt.StrongFocus)
         self._events: list       = []
         self._rows:   list       = []
+        self._selected: set      = set()
+        self._clipboard: list    = []
         self._drag_idx:    Optional[int] = None
         self._drag_ghost:  Optional[QWidget] = None
         self._drag_origin_y: int = 0
@@ -1160,6 +1313,7 @@ class SequencePanel(QWidget):
         self._drag_vp:     Optional[QWidget] = None
         self._drag_timer:  Optional[QTimer]  = None
         self._drag_scroll_speed: int = 0
+        self._preview_widget: Optional[QWidget] = None
 
         vl = QVBoxLayout(self)
         vl.setContentsMargins(0, 0, 0, 0)
@@ -1169,12 +1323,6 @@ class SequencePanel(QWidget):
         hbar.setFixedHeight(28)
         hbl   = QHBoxLayout(hbar)
         hbl.setContentsMargins(14, 0, 14, 0)
-        cap = QLabel("SEQUENCE")
-        cap.setStyleSheet(
-            f"font-family:{FONT}; font-size:10px; font-weight:700;"
-            " color:#7a8299; letter-spacing:1.4px;")
-        hbl.addWidget(cap, 0, Qt.AlignVCenter)
-        hbl.addSpacing(8)
         clear_btn = QPushButton("\u2715 Clear all")
         clear_btn.setObjectName("btnSeqDel")
         clear_btn.setFixedHeight(16)
@@ -1206,33 +1354,14 @@ class SequencePanel(QWidget):
         sep.setFixedHeight(1)
         vl.addWidget(sep)
 
-        scroll_container = QWidget()
-        scroll_container.setAttribute(Qt.WA_StyledBackground, False)
-        sc_layout = QHBoxLayout(scroll_container)
-        sc_layout.setContentsMargins(0, 0, 0, 0)
-        sc_layout.setSpacing(0)
-
-        from PySide6.QtWidgets import QScrollArea
+        from PySide6.QtWidgets import QScrollArea, QScrollBar
         self._scroll = QScrollArea()
         self._scroll.setObjectName("seqScroll")
         self._scroll.setWidgetResizable(True)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll.setStyleSheet(
-            "QScrollArea#seqScroll { border: none; background: transparent; }"
-            "QScrollBar:vertical { width: 4px; background: transparent; }"
-            "QScrollBar::handle:vertical { background: rgba(120,200,255,0.40);"
-            " border-radius: 2px; min-height: 18px; }"
-            "QScrollBar::handle:vertical:hover { background: rgba(120,200,255,0.70); }"
-            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
-            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
-            " { background: transparent; }")
-        sc_layout.addWidget(self._scroll, 1)
-
-        spacer = QWidget()
-        spacer.setFixedWidth(6)
-        spacer.setAttribute(Qt.WA_StyledBackground, False)
-        sc_layout.addWidget(spacer)
+            "QScrollArea#seqScroll { border: none; background: transparent; }")
 
         self._inner   = QWidget()
         self._inner_l = QVBoxLayout(self._inner)
@@ -1240,18 +1369,49 @@ class SequencePanel(QWidget):
         self._inner_l.setSpacing(4)
         self._inner_l.addStretch()
         self._scroll.setWidget(self._inner)
-        vl.addWidget(scroll_container, 1)
+        vl.addWidget(self._scroll, 1)
+
+        self._overlay_sb = QScrollBar(Qt.Vertical, self._scroll)
+        self._overlay_sb.setFixedWidth(4)
+        self._overlay_sb.setStyleSheet(
+            "QScrollBar:vertical { width: 4px; background: transparent; border: none; }"
+            "QScrollBar::handle:vertical { background: rgba(120,200,255,0.40);"
+            " border-radius: 2px; min-height: 18px; }"
+            "QScrollBar::handle:vertical:hover { background: rgba(120,200,255,0.70); }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical"
+            " { background: transparent; }")
+        self._overlay_sb.hide()
+
+        _real = self._scroll.verticalScrollBar()
+        _real.rangeChanged.connect(self._on_sb_range_changed)
+        _real.valueChanged.connect(self._overlay_sb.setValue)
+        self._overlay_sb.valueChanged.connect(_real.setValue)
+
+    def _position_overlay_sb(self) -> None:
+        w = self._overlay_sb.width()
+        h = self._scroll.height()
+        corner_r = 12
+        self._overlay_sb.setGeometry(self._scroll.width() - w - 3, 0, w, h - corner_r)
+        self._overlay_sb.raise_()
+
+    def _on_sb_range_changed(self, min_val: int, max_val: int) -> None:
+        real = self._scroll.verticalScrollBar()
+        self._overlay_sb.setRange(min_val, max_val)
+        self._overlay_sb.setPageStep(real.pageStep())
+        self._overlay_sb.setSingleStep(real.singleStep())
+        visible = max_val > min_val
+        if visible:
+            self._position_overlay_sb()
+        self._overlay_sb.setVisible(visible)
 
     def set_events(self, events: list) -> None:
-        """Replace all displayed events.
-
-        Args:
-            events: New list of event dicts.
-        """
         self._events = [dict(e) for e in events]
         self._rebuild()
 
     def _rebuild(self) -> None:
+        if self._preview_widget is not None:
+            self._inner_l.removeWidget(self._preview_widget)
         for row in self._rows:
             self._inner_l.removeWidget(row)
             row.deleteLater()
@@ -1262,8 +1422,13 @@ class SequencePanel(QWidget):
             row.deleted.connect(self._on_delete)
             row.changed.connect(self._on_changed)
             row.drag_start.connect(self._on_drag_start)
+            row.row_clicked.connect(self._on_row_clicked)
             self._inner_l.insertWidget(self._inner_l.count() - 1, row)
             self._rows.append(row)
+
+        self._selected = {i for i in self._selected if i < len(self._rows)}
+        for i in self._selected:
+            self._rows[i].set_selected(True)
 
         nc    = sum(1 for e in self._events if e["type"] == "mouse_click")
         nk    = sum(1 for e in self._events
@@ -1279,39 +1444,57 @@ class SequencePanel(QWidget):
         self.events_changed.emit([])
 
     def _add_input(self) -> None:
+        if getattr(self, "_open_input_dlg", None) is not None:
+            self._open_input_dlg.raise_()
+            return
         dlg = AddInputDialog(self, len(self._events))
-        if dlg.exec() != QDialog.Accepted:
-            return
-        ev  = dlg.result_event
-        pos = dlg.result_pos
-        if ev is None:
-            return
-        if ev.get("time", 0.0) == 0.0:
-            if pos > 0 and self._events:
-                ref = self._events[min(pos - 1, len(self._events) - 1)]
-                ev["time"] = ref.get("time", 0.0)
-            elif self._events:
-                ev["time"] = self._events[0].get("time", 0.0)
-        self._events.insert(pos, ev)
-        self._rebuild()
-        self.events_changed.emit(list(self._events))
+        self._open_input_dlg = dlg
+
+        def _accepted() -> None:
+            self._open_input_dlg = None
+            self._hide_insert_preview()
+            ev = dlg.result_event
+            if ev is None:
+                return
+            pos = dlg.result_pos
+            self._events.insert(pos, ev)
+            self._rebuild()
+            self.events_changed.emit(list(self._events))
+
+        def _rejected() -> None:
+            self._open_input_dlg = None
+            self._hide_insert_preview()
+
+        dlg.pos_preview.connect(self._show_insert_preview)
+        dlg.accepted.connect(_accepted)
+        dlg.rejected.connect(_rejected)
+        dlg.show()
 
     def _add_wait(self) -> None:
-        dlg = WaitDialog(self, len(self._events))
-        if dlg.exec() != QDialog.Accepted:
+        if getattr(self, "_open_wait_dlg", None) is not None:
+            self._open_wait_dlg.raise_()
             return
-        ms  = dlg.result_ms
-        pos = dlg.result_pos
-        if pos > 0 and self._events:
-            t = self._events[min(pos - 1, len(self._events) - 1)].get("time", 0.0)
-        elif self._events:
-            t = self._events[0].get("time", 0.0)
-        else:
-            t = 0.0
-        ev = {"type": "wait", "duration": ms / 1000.0, "time": t}
-        self._events.insert(pos, ev)
-        self._rebuild()
-        self.events_changed.emit(list(self._events))
+        dlg = WaitDialog(self, len(self._events))
+        self._open_wait_dlg = dlg
+
+        def _accepted() -> None:
+            self._open_wait_dlg = None
+            ms  = dlg.result_ms
+            pos = dlg.result_pos
+            if pos > 0 and self._events:
+                t = self._events[min(pos - 1, len(self._events) - 1)].get("time", 0.0)
+            elif self._events:
+                t = self._events[0].get("time", 0.0)
+            else:
+                t = 0.0
+            ev = {"type": "wait", "duration": ms / 1000.0, "time": t}
+            self._events.insert(pos, ev)
+            self._rebuild()
+            self.events_changed.emit(list(self._events))
+
+        dlg.accepted.connect(_accepted)
+        dlg.rejected.connect(lambda: setattr(self, "_open_wait_dlg", None))
+        dlg.show()
 
     def _on_drag_start(self, idx: int, global_pos: object) -> None:
         from PySide6.QtCore import QPoint
@@ -1539,22 +1722,19 @@ class SequencePanel(QWidget):
         sb = self._scroll.verticalScrollBar()
 
         if from_idx != to_idx:
-            ev  = self._events.pop(from_idx)
+            ev = self._events.pop(from_idx)
             self._events.insert(to_idx, ev)
-            row = self._rows.pop(from_idx)
-            self._rows.insert(to_idx, row)
 
         for row in self._rows:
-            self._inner_l.removeWidget(row)
-        for i, row in enumerate(self._rows):
-            row.setParent(self._inner)
-            self._inner_l.insertWidget(i, row)
-            row.update_index(i)
-            row.set_dragging(False)
-            row.show()
+            row.hide()
+            row.setParent(None)
+        self._rows = []
 
         if ghost:
+            ghost.setParent(None)
             ghost.deleteLater()
+
+        self._rebuild()
 
         nc = sum(1 for e in self._events if e["type"] == "mouse_click")
         nk = sum(1 for e in self._events
@@ -1584,8 +1764,87 @@ class SequencePanel(QWidget):
     def mouseReleaseEvent(self, e: object) -> None:
         pass
 
+    def _show_insert_preview(self, pos: int) -> None:
+        if not self._rows:
+            self._hide_insert_preview()
+            return
+        pos = max(0, min(len(self._rows), pos))
+        row_h = self._rows[0].height()
+
+        if self._preview_widget is None:
+            pw = _InsertPreview()
+            pw.setFixedHeight(row_h)
+            self._preview_widget = pw
+        else:
+            self._inner_l.removeWidget(self._preview_widget)
+
+        self._inner_l.insertWidget(pos, self._preview_widget)
+        self._preview_widget.show()
+
+    def _hide_insert_preview(self) -> None:
+        if self._preview_widget is not None:
+            self._inner_l.removeWidget(self._preview_widget)
+            self._preview_widget.setParent(None)
+            self._preview_widget = None
+
+    def _on_row_clicked(self, idx: int, modifiers: int) -> None:
+        ctrl  = bool(modifiers & Qt.ControlModifier.value)
+        shift = bool(modifiers & Qt.ShiftModifier.value)
+        if ctrl:
+            if idx in self._selected:
+                self._selected.discard(idx)
+                self._rows[idx].set_selected(False)
+            else:
+                self._selected.add(idx)
+                self._rows[idx].set_selected(True)
+        elif shift and self._selected:
+            last = max(self._selected)
+            lo, hi = min(last, idx), max(last, idx)
+            for i in range(lo, hi + 1):
+                if i < len(self._rows):
+                    self._selected.add(i)
+                    self._rows[i].set_selected(True)
+        else:
+            for i in list(self._selected):
+                if i < len(self._rows):
+                    self._rows[i].set_selected(False)
+            self._selected = {idx}
+            self._rows[idx].set_selected(True)
+        self.setFocus()
+
+    def keyPressEvent(self, e: object) -> None:
+        key  = e.key()
+        mods = e.modifiers()
+        ctrl = bool(mods.value & Qt.ControlModifier.value)
+        if key == Qt.Key_C and ctrl:
+            self._clipboard = [dict(self._events[i])
+                               for i in sorted(self._selected)
+                               if i < len(self._events)]
+        elif key == Qt.Key_V and ctrl:
+            if self._clipboard:
+                at = max(self._selected) + 1 if self._selected else len(self._events)
+                for i, ev in enumerate(self._clipboard):
+                    self._events.insert(at + i, dict(ev))
+                self._selected = set(range(at, at + len(self._clipboard)))
+                self._rebuild()
+                self.events_changed.emit(list(self._events))
+        elif key == Qt.Key_A and ctrl:
+            self._selected = set(range(len(self._rows)))
+            for row in self._rows:
+                row.set_selected(True)
+        elif key in (Qt.Key_Delete, Qt.Key_Backspace) and self._selected:
+            for i in sorted(self._selected, reverse=True):
+                if 0 <= i < len(self._events):
+                    self._events.pop(i)
+            self._selected.clear()
+            self._rebuild()
+            self.events_changed.emit(list(self._events))
+        else:
+            super().keyPressEvent(e)
+
     def _on_delete(self, idx: int) -> None:
         if 0 <= idx < len(self._events):
+            self._selected.clear()
             self._events.pop(idx)
             self._rebuild()
             self.events_changed.emit(list(self._events))
@@ -1596,13 +1855,214 @@ class SequencePanel(QWidget):
             self.events_changed.emit(list(self._events))
 
 
-# ---------------------------------------------------------------------------
-# Main Window
-# ---------------------------------------------------------------------------
+
+def _mac_check_accessibility() -> bool:
+    try:
+        import ctypes
+        lib = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+        )
+        lib.AXIsProcessTrusted.restype  = ctypes.c_int
+        lib.AXIsProcessTrusted.argtypes = []
+        return lib.AXIsProcessTrusted() != 0
+    except Exception:
+        return True
+
+
+def _mac_check_input_monitoring() -> bool:
+    try:
+        import Quartz
+        tap = Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            Quartz.kCGEventTapOptionListenOnly,
+            Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown),
+            lambda proxy, type_, event, refcon: event,
+            None,
+        )
+        if tap is None:
+            return False
+        Quartz.CGEventTapEnable(tap, False)
+        return True
+    except Exception:
+        pass
+    try:
+        import ctypes
+        IOKit = ctypes.cdll.LoadLibrary(
+            "/System/Library/Frameworks/IOKit.framework/IOKit"
+        )
+        IOKit.IOHIDCheckAccess.restype  = ctypes.c_int
+        IOKit.IOHIDCheckAccess.argtypes = [ctypes.c_uint32]
+        return IOKit.IOHIDCheckAccess(1) == 1
+    except Exception:
+        return False
+
+
+class MacPermissionsDialog(QDialog):
+    def __init__(self, parent: QWidget, has_accessibility: bool, has_input_monitoring: bool) -> None:
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._drag: Optional[object] = None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 12, 12, 18)
+
+        container = QWidget()
+        container.setObjectName("mainContainer")
+        container.setAttribute(Qt.WA_StyledBackground, True)
+        sh = QGraphicsDropShadowEffect()
+        sh.setBlurRadius(40)
+        sh.setColor(QColor(0, 0, 0, 200))
+        sh.setOffset(0, 10)
+        container.setGraphicsEffect(sh)
+        outer.addWidget(container)
+
+        root = QVBoxLayout(container)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        tb = QWidget()
+        tb.setObjectName("titleBar")
+        tb.setAttribute(Qt.WA_StyledBackground, True)
+        tb.setFixedHeight(34)
+        tbl = QHBoxLayout(tb)
+        tbl.setContentsMargins(12, 0, 8, 0)
+        tbl.setSpacing(4)
+        _pix = QPixmap()
+        _pix.loadFromData(base64.b64decode(LOGO_B64))
+        logo = QLabel()
+        logo.setPixmap(_pix.scaled(16, 16, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        logo.setFixedSize(16, 16)
+        tbl.addWidget(logo)
+        tbl.addSpacing(5)
+        ttl = QLabel("Permissions Required")
+        ttl.setStyleSheet(
+            f"font-family:{FONT}; font-size:11px; font-weight:700; color:#eef0f5;")
+        tbl.addWidget(ttl)
+        tbl.addStretch()
+        xb = QPushButton("\u2715")
+        xb.setObjectName("btnClose")
+        xb.setFixedSize(22, 22)
+        xb.clicked.connect(self.accept)
+        tbl.addWidget(xb)
+
+        def _tb_press(e: object) -> None:
+            if e.button() == Qt.LeftButton:
+                self._drag = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        def _tb_move(e: object) -> None:
+            if self._drag and e.buttons() == Qt.LeftButton:
+                self.move(e.globalPosition().toPoint() - self._drag)
+        def _tb_release(e: object) -> None:
+            self._drag = None
+        tb.mousePressEvent   = _tb_press
+        tb.mouseMoveEvent    = _tb_move
+        tb.mouseReleaseEvent = _tb_release
+        root.addWidget(tb)
+
+        body = QWidget()
+        body.setAttribute(Qt.WA_StyledBackground, False)
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(16, 14, 16, 16)
+        bl.setSpacing(12)
+
+        desc = QLabel(
+            "macro maker needs the following macOS permissions to work correctly.\n"
+            "Grant them in System Settings, then quit and relaunch the app."
+        )
+        desc.setObjectName("dlgSubLabel")
+        desc.setWordWrap(True)
+        desc.setStyleSheet(
+            f"font-family:{FONT}; font-size:11px; color:#9aa0b0; line-height:150%;")
+        bl.addWidget(desc)
+
+        def _perm_row(label: str, sublabel: str, granted: bool, url: str) -> QWidget:
+            from PySide6.QtGui import QDesktopServices, QCursor
+            from PySide6.QtCore import QUrl
+            row = QWidget()
+            row.setAttribute(Qt.WA_StyledBackground, True)
+            bg_idle  = "rgba(255,255,255,0.03)"
+            bg_hover = "rgba(255,255,255,0.07)"
+            border   = "rgba(255,255,255,0.07)"
+            row.setStyleSheet(
+                f"QWidget {{ background: {bg_idle};"
+                f" border: 1px solid {border}; border-radius: 8px; }}")
+            if not granted:
+                row.setCursor(QCursor(Qt.PointingHandCursor))
+
+            rl = QHBoxLayout(row)
+            rl.setContentsMargins(12, 10, 12, 10)
+            rl.setSpacing(10)
+
+            dot = QLabel("\u2713" if granted else "\u2192")
+            dot.setFixedSize(18, 18)
+            dot.setAlignment(Qt.AlignCenter)
+            dot_color = "#3ddc84" if granted else "#89dfff"
+            dot.setStyleSheet(
+                f"font-family:{FONT}; font-size:11px; font-weight:700;"
+                f" color:{dot_color};"
+                f" background: {'rgba(61,220,132,0.12)' if granted else 'rgba(137,223,255,0.10)'};"
+                f" border-radius: 9px;")
+            rl.addWidget(dot, 0, Qt.AlignVCenter)
+
+            txt = QVBoxLayout()
+            txt.setSpacing(1)
+            name_lbl = QLabel(label)
+            name_lbl.setStyleSheet(
+                f"font-family:{FONT}; font-size:11px; font-weight:600; color:#eef0f5;"
+                " background:transparent; border:none;")
+            sub_lbl = QLabel(sublabel if granted else sublabel + " — click to open")
+            sub_lbl.setStyleSheet(
+                f"font-family:{FONT}; font-size:10px;"
+                f" color:{'#7a7a7a' if granted else '#89dfff'};"
+                " background:transparent; border:none;")
+            txt.addWidget(name_lbl)
+            txt.addWidget(sub_lbl)
+            rl.addLayout(txt, 1)
+
+            if not granted:
+                def _enter(e, r=row, bg=bg_hover, b=border):
+                    r.setStyleSheet(
+                        f"QWidget {{ background: {bg};"
+                        f" border: 1px solid {b}; border-radius: 8px; }}")
+                def _leave(e, r=row, bg=bg_idle, b=border):
+                    r.setStyleSheet(
+                        f"QWidget {{ background: {bg};"
+                        f" border: 1px solid {b}; border-radius: 8px; }}")
+                def _click(e, u=url):
+                    QDesktopServices.openUrl(QUrl(u))
+                row.enterEvent    = _enter
+                row.leaveEvent    = _leave
+                row.mousePressEvent = _click
+
+            return row
+
+        bl.addWidget(_perm_row(
+            "Accessibility",
+            "Required for keyboard & mouse playback",
+            has_accessibility,
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        ))
+        bl.addWidget(_perm_row(
+            "Input Monitoring",
+            "Required for keyboard recording",
+            has_input_monitoring,
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+        ))
+
+        hint = QLabel("If the app doesn't appear in the list, click\u00a0+ in the bottom\u00a0left to add it manually.")
+        hint.setWordWrap(True)
+        hint.setAlignment(Qt.AlignCenter)
+        hint.setStyleSheet(
+            f"font-family:{FONT}; font-size:10px; color:#52596b;")
+        bl.addWidget(hint)
+
+        root.addWidget(body)
+        self.setMinimumWidth(340)
+
+
 
 class MainWindow(QWidget):
-    """Primary application window."""
-
     _SEQ_MIN_H: int = SEQ_MIN_H
 
     def __init__(self) -> None:
@@ -1612,6 +2072,7 @@ class MainWindow(QWidget):
 
         self._events: list             = []
         self._recording: bool          = False
+        self._paused: bool             = False
         self._playing: bool            = False
         self._play_worker: Optional[PlayWorker] = None
         self._play_thread: Optional[QThread]    = None
@@ -1642,10 +2103,8 @@ class MainWindow(QWidget):
         ensure_mmr_icon(MMR_ICO_B64)
         self._sync()
         QTimer.singleShot(0, self._fix_size)
-
-    # ------------------------------------------------------------------
-    # Listener
-    # ------------------------------------------------------------------
+        if sys.platform == "darwin":
+            QTimer.singleShot(800, self._check_mac_permissions)
 
     def _start_listener(self) -> None:
         if self._listener:
@@ -1657,15 +2116,12 @@ class MainWindow(QWidget):
         self._listener_thread = QThread()
         self._listener.moveToThread(self._listener_thread)
         self._listener.set_hotkeys(self._rec_key, self._play_key)
-        self._listener.hk_rec.connect(self._hk_rec,  Qt.QueuedConnection)
-        self._listener.hk_play.connect(self._hk_play, Qt.QueuedConnection)
+        self._listener.hk_rec.connect(self._hk_rec,       Qt.QueuedConnection)
+        self._listener.hk_rec_hold.connect(self._hk_rec_hold, Qt.QueuedConnection)
+        self._listener.hk_play.connect(self._hk_play,     Qt.QueuedConnection)
         self._listener.rec_event.connect(self._on_ev, Qt.QueuedConnection)
         self._listener_thread.started.connect(self._listener.start)
         self._listener_thread.start()
-
-    # ------------------------------------------------------------------
-    # Layout
-    # ------------------------------------------------------------------
 
     def _build(self) -> None:
         outer = QVBoxLayout(self)
@@ -1736,8 +2192,8 @@ class MainWindow(QWidget):
         c2l.setSpacing(6)
         c2l.setAlignment(Qt.AlignVCenter)
 
-        self._rec_btn = QPushButton(self._rec_label())
-        self._rec_btn.setObjectName("btnRecord")
+        self._rec_btn = RecButton()
+        self._rec_btn.setText(self._rec_label())
         self._rec_btn.setFixedHeight(32)
         self._rec_btn.setFixedWidth(168)
         self._rec_btn.clicked.connect(self._toggle_rec)
@@ -1831,10 +2287,6 @@ class MainWindow(QWidget):
         self._resize_handle.setVisible(False)
         root.addWidget(self._resize_handle)
 
-    # ------------------------------------------------------------------
-    # Toast notifications
-    # ------------------------------------------------------------------
-
     def _toast_show(self, label: str, value: str) -> None:
         self._toast_timer.stop()
         self._toast_label_left.setText(label)
@@ -1856,15 +2308,20 @@ class MainWindow(QWidget):
             self.setFixedHeight(self._base_h)
 
 
-    # ------------------------------------------------------------------
-    # Hotkey / button handlers
-    # ------------------------------------------------------------------
 
     def _hk_rec(self) -> None:
         if self._recording:
             self._stop_rec()
         else:
             self._start_rec()
+
+    def _hk_rec_hold(self) -> None:
+        if not self._recording:
+            return
+        if self._paused:
+            self._resume_rec()
+        else:
+            self._pause_rec()
 
     def _hk_play(self) -> None:
         self._stop_all() if self._playing else self._start_play()
@@ -1889,6 +2346,7 @@ class MainWindow(QWidget):
             self.setFixedHeight(self._base_h)
         self._events    = []
         self._recording = True
+        self._paused    = False
         if self._listener:
             self._listener.start_recording()
         self._set_status("Recording\u2026", "#ff4b69")
@@ -1896,12 +2354,27 @@ class MainWindow(QWidget):
 
     def _stop_rec(self) -> None:
         self._recording = False
+        self._paused    = False
         if self._listener:
             self._listener.stop_recording()
         self._set_status("Standby", "#52596b")
         autosave(self._events)
         if self._seq_expanded:
             self._seq_panel.set_events(self._seq_events())
+        self._sync()
+
+    def _pause_rec(self) -> None:
+        self._paused = True
+        if self._listener:
+            self._listener.pause_recording()
+        self._set_status("Paused", "#ffaa32")
+        self._sync()
+
+    def _resume_rec(self) -> None:
+        self._paused = False
+        if self._listener:
+            self._listener.resume_recording()
+        self._set_status("Recording\u2026", "#ff4b69")
         self._sync()
 
     def _on_ev(self, ev: dict) -> None:
@@ -1915,7 +2388,8 @@ class MainWindow(QWidget):
         for ev in self._events:
             tp = ev["type"]
             if tp == "mouse_move":
-                if out and out[-1]["type"] == "mouse_move":
+                if (out and out[-1]["type"] == "mouse_move"
+                        and out[-1].get("recorded") and ev.get("recorded")):
                     out[-1] = ev
                 else:
                     out.append(ev)
@@ -1997,6 +2471,7 @@ class MainWindow(QWidget):
             self._loop_timer = None
         if self._recording:
             self._recording = False
+            self._paused    = False
             if self._listener:
                 self._listener.stop_recording()
         if self._playing:
@@ -2010,10 +2485,6 @@ class MainWindow(QWidget):
                 self._play_thread.wait()
         self._set_status("Standby", "#52596b")
         self._sync()
-
-    # ------------------------------------------------------------------
-    # UI helpers
-    # ------------------------------------------------------------------
 
     def _rec_label(self) -> str:
         return f"\u2b24  Record  [{self._rec_key}]"
@@ -2032,16 +2503,26 @@ class MainWindow(QWidget):
         self._imp.setEnabled(idle)
         self._exp.setEnabled(idle and has)
         if self._recording:
-            self._rec_btn.setText(f"\u25a0  Stop  [{self._rec_key}]")
+            if self._paused:
+                self._rec_btn.set_paused(True)
+                self._rec_btn.setText(f"Paused  [{self._rec_key}]")
+            else:
+                self._rec_btn.set_paused(False)
+                self._rec_btn.setText(f"\u25a0  Stop  [{self._rec_key}]")
             self._expand_btn.setEnabled(False)
         else:
+            self._rec_btn.set_paused(False)
             self._rec_btn.setText(self._rec_label())
             self._expand_btn.setEnabled(True)
         self._play_btn.set_playing(self._playing)
 
     def _on_pin(self, on: bool) -> None:
-        from ..utils.platform_helpers import set_window_topmost
-        set_window_topmost(int(self.winId()), on)
+        if sys.platform in ("win32", "darwin"):
+            from ..utils.platform_helpers import set_window_topmost
+            set_window_topmost(int(self.winId()), on)
+        else:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, on)
+            self.show()
 
     def _import(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -2060,7 +2541,7 @@ class MainWindow(QWidget):
             self._events = d
             autosave(self._events)
             if self._seq_expanded:
-                self._seq_panel.set_events(self._events)
+                self._seq_panel.set_events(self._seq_events())
             self._sync()
             self._toast_show("imported", os.path.basename(path))
         except Exception:
@@ -2153,16 +2634,12 @@ class MainWindow(QWidget):
                 self, "_wh_show_cycles", True) else "0",
         })
 
-    # ------------------------------------------------------------------
-    # Sequence panel expand / collapse / resize
-    # ------------------------------------------------------------------
-
     def _set_container_radius(self, bottom_rounded: bool) -> None:
         if bottom_rounded:
             self._container.setStyleSheet("")
         else:
             self._container.setStyleSheet(
-                "QWidget#mainContainer { background: #13131c; border-radius: 12px;"
+                "QWidget#mainContainer { background: #121212; border-radius: 12px;"
                 " border-bottom-left-radius: 0px;"
                 " border-bottom-right-radius: 0px; }")
 
@@ -2259,14 +2736,43 @@ class MainWindow(QWidget):
         self._resize_dragging = False
 
     def _on_seq_changed(self, events: list) -> None:
-        raw_moves = [e for e in self._events if e["type"] == "mouse_move"]
-        new_non_moves = [e for e in events if e["type"] != "mouse_move"]
-
-        if not raw_moves:
-            self._events = new_non_moves
+        if not events:
+            self._events = []
             autosave(self._events)
             self._sync()
             return
+
+        raw_moves = [e for e in self._events if e["type"] == "mouse_move"]
+        new_non_moves = [e for e in events if e["type"] != "mouse_move"]
+
+        seq_moves = [e for e in events if e["type"] == "mouse_move"]
+        extra_input_moves: list = []
+        if seq_moves and raw_moves:
+            g_idx = 0
+            for i, ev in enumerate(self._events):
+                if ev["type"] != "mouse_move":
+                    continue
+                nxt = self._events[i + 1] if i + 1 < len(self._events) else None
+                is_last = (not ev.get("recorded")
+                           or nxt is None
+                           or nxt["type"] != "mouse_move"
+                           or not nxt.get("recorded"))
+                if is_last and g_idx < len(seq_moves):
+                    src = seq_moves[g_idx]
+                    for k in ("x", "y", "move_duration", "move_mode"):
+                        if k in src:
+                            ev[k] = src[k]
+                    g_idx += 1
+            extra_input_moves = seq_moves[g_idx:]
+
+        if not raw_moves:
+            self._events = seq_moves + new_non_moves
+            autosave(self._events)
+            self._sync()
+            return
+
+        if extra_input_moves:
+            new_non_moves = new_non_moves + extra_input_moves
 
         existing_non_moves = {
             e["_seq_id"]: e
@@ -2299,10 +2805,6 @@ class MainWindow(QWidget):
         autosave(self._events)
         self._sync()
 
-    # ------------------------------------------------------------------
-    # Misc helpers
-    # ------------------------------------------------------------------
-
     def _vdiv(self) -> QFrame:
         f = QFrame()
         f.setObjectName("divV")
@@ -2311,12 +2813,20 @@ class MainWindow(QWidget):
         f.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         return f
 
+    def _check_mac_permissions(self) -> None:
+        has_acc = _mac_check_accessibility()
+        has_im  = _mac_check_input_monitoring()
+        if not has_acc or not has_im:
+            dlg = MacPermissionsDialog(self, has_acc, has_im)
+            dlg.exec()
+
     def _fix_size(self) -> None:
         self._base_h = self.height()
         self.setFixedWidth(self.width())
         self.setFixedHeight(self._base_h)
 
     def closeEvent(self, e: object) -> None:
+        autosave(self._events)
         if self._listener:
             self._listener.stop()
         if hasattr(self, "_listener_thread") and self._listener_thread:

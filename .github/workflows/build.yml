@@ -1,4 +1,4 @@
-name: Build EXE
+name: Build – Windows
 
 on:
   push:
@@ -15,7 +15,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -24,10 +24,23 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install pyinstaller PySide6 pynput requests
+        run: pip install pyinstaller PySide6 pynput pillow
+
+      - name: Convert icon to .ico
+        run: python -c "from PIL import Image; img = Image.open('src/icon.png'); img.save('src/icon.ico', format='ICO', sizes=[(16,16),(32,32),(48,48),(256,256)])"
 
       - name: Build EXE
-        run: pyinstaller --onefile --noconsole --clean --paths src --icon icon.ico --name MorisMacroMaker src/macro_maker/main.py
+        run: >
+          pyinstaller
+          --onefile
+          --noconsole
+          --clean
+          --paths src
+          --icon src/icon.ico
+          --hidden-import=pynput.keyboard._win32
+          --hidden-import=pynput.mouse._win32
+          --name MorisMacroMaker
+          src/macro_maker/main.py
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2

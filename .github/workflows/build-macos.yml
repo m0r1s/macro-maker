@@ -1,0 +1,81 @@
+name: Build – macOS
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install pyinstaller PySide6 pynput
+
+      - name: Convert icon to .icns
+        run: |
+          mkdir -p /tmp/icon.iconset
+          for size in 16 32 64 128 256 512; do
+            sips -z $size $size src/icon.png --out /tmp/icon.iconset/icon_${size}x${size}.png
+          done
+          sips -z 32 32   src/icon.png --out /tmp/icon.iconset/icon_16x16@2x.png
+          sips -z 64 64   src/icon.png --out /tmp/icon.iconset/icon_32x32@2x.png
+          sips -z 256 256 src/icon.png --out /tmp/icon.iconset/icon_128x128@2x.png
+          sips -z 512 512 src/icon.png --out /tmp/icon.iconset/icon_256x256@2x.png
+          iconutil -c icns /tmp/icon.iconset -o src/icon.icns
+
+      - name: Build .app bundle
+        working-directory: src
+        run: pyinstaller macro_maker.spec
+
+      - name: Ad-hoc sign .app bundle
+        run: |
+          codesign \
+            --deep \
+            --force \
+            --options runtime \
+            --entitlements src/entitlements.plist \
+            --sign "-" \
+            src/dist/MorisMacroMaker.app
+
+      - name: Create DMG
+        run: |
+          brew install create-dmg
+          pip install pillow
+
+          python3 -c "from PIL import Image, ImageDraw; w,h=600,400; img=Image.new('RGB',(w,h),(245,245,245)); draw=ImageDraw.Draw(img); x1,x2,y=215,385,185; draw.line([(x1,y),(x2-22,y)],fill=(80,80,80),width=6); draw.polygon([(x2,y),(x2-22,y-11),(x2-22,y+11)],fill=(80,80,80)); img.save('dmg_background.png')"
+
+          printf 'If macOS blocks the app, open Terminal and run:\n\n    xattr -dr com.apple.quarantine /Applications/MorisMacroMaker.app\n' > src/dist/instructions.txt
+
+          create-dmg \
+            --volname "MorisMacroMaker" \
+            --window-pos 200 120 \
+            --window-size 600 400 \
+            --background "dmg_background.png" \
+            --icon-size 100 \
+            --icon "MorisMacroMaker.app" 150 185 \
+            --hide-extension "MorisMacroMaker.app" \
+            --app-drop-link 450 185 \
+            --icon "instructions.txt" 300 50 \
+            "MorisMacroMaker.dmg" \
+            "src/dist/"
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MorisMacroMaker.dmg
+          generate_release_notes: true

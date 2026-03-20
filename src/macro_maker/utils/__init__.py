@@ -18,4 +18,3 @@ Full license text: See LICENSE.md
 For support: https://discord.gg/2fraBuhe3m
 """
 
-"""Utility subpackage: constants, platform helpers, and serialization."""

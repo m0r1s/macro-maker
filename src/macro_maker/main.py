@@ -18,10 +18,8 @@ Full license text: See LICENSE.md
 For support: https://discord.gg/2fraBuhe3m
 """
 
-"""Entry point for the macro_maker application."""
-
-import sys
 import os
+import sys
 import base64
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,19 +27,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication
 
-from macro_maker.ui.main_window import MainWindow
+from macro_maker.ui.main_window   import MainWindow
 from macro_maker.ui.styles import SS
 from macro_maker.utils.serialization import ensure_mmr_icon
 from macro_maker.utils.constants import MMR_ICO_B64, LOGO_B64
 
 
-def main() -> None:
-    """Launch the macro_maker application.
 
-    Creates the QApplication, applies the global stylesheet, shows the
-    main window, and enters the Qt event loop.
-    """
-    ensure_mmr_icon(MMR_ICO_B64)
+def main() -> None:
+    if sys.platform == "win32":
+        ensure_mmr_icon(MMR_ICO_B64)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setStyleSheet(SS)
