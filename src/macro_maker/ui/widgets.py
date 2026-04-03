@@ -168,6 +168,9 @@ def _ev_label(ev: dict) -> str:
     if tp == "loop_above":
         count = ev.get("count", 1)
         return f"Loop Above  {count}\u00d7"
+    if tp == "mouse_drag_right":
+        n = len(ev.get("deltas", []))
+        return f"Right Drag  {n} steps"
     return tp
 
 

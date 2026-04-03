@@ -12,9 +12,6 @@ a = Analysis(
         "pynput.mouse._darwin",
         "pynput.keyboard._win32",
         "pynput.mouse._win32",
-        "Quartz",
-        "HIServices",
-        "AppKit",
     ],
     hookspath=[],
     hooksconfig={},
@@ -61,8 +58,8 @@ app = BUNDLE(
     info_plist={
         "CFBundleName": "MorisMacroMaker",
         "CFBundleDisplayName": "Moris Macro Maker",
-        "CFBundleVersion": "1.0.0",
-        "CFBundleShortVersionString": "1.0.0",
+        "CFBundleVersion": "1.2.0",
+        "CFBundleShortVersionString": "1.2.0",
         "NSHighResolutionCapable": True,
         "NSInputMonitoringUsageDescription":
             "Macro Maker needs Input Monitoring to record keyboard inputs.",

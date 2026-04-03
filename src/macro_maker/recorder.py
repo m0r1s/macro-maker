@@ -25,6 +25,7 @@ from typing import Callable
 
 from PySide6.QtCore import QObject, Signal
 
+from .utils.platform_helpers import RawMouseInputListener
 from .utils.serialization import (
     key_to_canon,
     ser_key,
@@ -61,6 +62,11 @@ class MacroRecorder(QObject):
         self._rec_hold_fired: bool = False
         self._rec_hold_timer: threading.Timer | None = None
         self._lock = threading.Lock()
+        self._right_held: bool     = False
+        self._drag_deltas: list    = []
+        self._drag_wall_t0: float  = 0.0
+        self._drag_ev_t0: float    = 0.0
+        self._raw_listener: RawMouseInputListener | None = None
 
     _HOLD_THRESHOLD: float = 0.8
 
@@ -76,8 +82,10 @@ class MacroRecorder(QObject):
 
     def stop_recording(self) -> None:
         with self._lock:
-            self._recording = False
-            self._paused    = False
+            self._recording  = False
+            self._paused     = False
+            self._right_held = False
+            self._drag_deltas = []
 
     def pause_recording(self) -> None:
         with self._lock:
@@ -107,9 +115,20 @@ class MacroRecorder(QObject):
             self._last_replayed_canon = "__click__"
             self._last_replayed_at    = time.time()
 
+    def _raw_delta_cb(self, dx: int, dy: int) -> None:
+        """Called from RawMouseInputListener thread for every non-zero hardware delta."""
+        with self._lock:
+            if not self._recording or self._paused or not self._right_held:
+                return
+            dt = time.time() - self._drag_wall_t0
+            self._drag_deltas.append([dx, dy, dt])
+
     def start(self) -> None:
         self._start_kb()
         self._start_ms()
+        if sys.platform in ("win32", "darwin"):
+            self._raw_listener = RawMouseInputListener(self._raw_delta_cb)
+            self._raw_listener.start()
 
     def stop(self) -> None:
         with self._lock:
@@ -119,6 +138,9 @@ class MacroRecorder(QObject):
             self._rec_hold_fired = False
         if t:
             t.cancel()
+        if self._raw_listener:
+            self._raw_listener.stop()
+            self._raw_listener = None
         for attr in ("_kb_listener", "_ms_listener"):
             lsn = getattr(self, attr, None)
             if lsn:
@@ -229,7 +251,7 @@ class MacroRecorder(QObject):
     def _start_ms(self) -> None:
         def on_move(x: int, y: int) -> None:
             with self._lock:
-                if not self._recording or self._paused:
+                if not self._recording or self._paused or self._right_held:
                     return
                 t = time.time() - self._t0
             self.rec_event.emit({"type": "mouse_move", "x": x, "y": y, "time": t, "recorded": True})
@@ -250,6 +272,27 @@ class MacroRecorder(QObject):
                 btn = "middle"
             else:
                 btn = "left"
+
+            if btn == "right":
+                if pr:
+                    with self._lock:
+                        self._right_held   = True
+                        self._drag_deltas  = []
+                        self._drag_wall_t0 = time.time()
+                        self._drag_ev_t0   = t
+                else:
+                    with self._lock:
+                        self._right_held  = False
+                        drag_deltas       = list(self._drag_deltas)
+                        self._drag_deltas = []
+                        drag_ev_t0        = self._drag_ev_t0
+                    if drag_deltas:
+                        self.rec_event.emit({
+                            "type":   "mouse_drag_right",
+                            "time":   drag_ev_t0,
+                            "deltas": drag_deltas,
+                        })
+
             self.rec_event.emit({
                 "type":    "mouse_click",
                 "x":       x,

@@ -27,12 +27,15 @@ from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
 
-from .utils.platform_helpers import get_mouse_pos, send_mouse_move, send_mouse_input
+from .utils.platform_helpers import (
+    get_mouse_pos, send_mouse_move, send_mouse_input,
+    send_mouse_move_relative, set_timer_resolution_ms, reset_timer_resolution_ms,
+)
 from .utils.serialization import parse_key, send_webhook, ser_key_to_canon
 
 try:
     from pynput.keyboard import Controller as KbCtrl
-    from pynput.mouse import Controller as MsCtrl
+    from pynput.mouse import Button as MsBtn, Controller as MsCtrl
     _OK = True
 except ImportError:
     _OK = False
@@ -105,6 +108,7 @@ class PlayWorker(QObject):
         self._ms: Optional[object] = MsCtrl() if _OK else None
         self._pkeys: set           = set()
         self._pbtns: set           = set()
+        self._held_btn: str        = ""
         self._loop_count         = loop_count
         self._wh_show_elapsed    = wh_show_elapsed
         self._wh_show_cycles     = wh_show_cycles
@@ -168,8 +172,9 @@ class PlayWorker(QObject):
                     tx, ty = int(ev["x"]), int(ev["y"])
                     dur_ms = float(ev.get("move_duration", 0))
                     mode   = ev.get("move_mode", "Linear")
+                    held = self._held_btn or None
                     if dur_ms <= 0:
-                        send_mouse_move(tx, ty)
+                        send_mouse_move(tx, ty, held)
                     else:
                         sx, sy  = get_mouse_pos()
                         dur_s   = dur_ms / 1000.0 / self._speed
@@ -202,7 +207,7 @@ class PlayWorker(QObject):
                             else:
                                 bx = sx + t * dx
                                 by = sy + t * dy
-                            send_mouse_move(int(bx), int(by))
+                            send_mouse_move(int(bx), int(by), held)
                             sleep_d = move_start + dur_s * t - time.perf_counter()
                             if sleep_d > 0.001:
                                 self._stop_evt.wait(timeout=sleep_d)
@@ -215,14 +220,51 @@ class PlayWorker(QObject):
                         btn = "middle"
                     else:
                         btn = "left"
+                    pressed = bool(ev["pressed"])
                     if self._listener:
                         self._listener.mark_replayed_click()
-                    send_mouse_input(
-                        int(ev["x"]), int(ev["y"]), btn, bool(ev["pressed"]))
+                    send_mouse_input(int(ev["x"]), int(ev["y"]), btn, pressed)
+                    if _OK:
+                        _btn_map = {
+                            "left":   MsBtn.left,
+                            "right":  MsBtn.right,
+                            "middle": MsBtn.middle,
+                        }
+                        btn_obj = _btn_map.get(btn)
+                        if btn_obj is not None:
+                            if pressed:
+                                self._pbtns.add(btn_obj)
+                                self._held_btn = btn
+                            else:
+                                self._pbtns.discard(btn_obj)
+                                if self._held_btn == btn:
+                                    self._held_btn = ""
 
                 elif tp == "mouse_scroll":
                     ms.position = (int(ev["x"]), int(ev["y"]))
                     ms.scroll(int(ev["dx"]), int(ev["dy"]))
+
+                elif tp == "mouse_drag_right":
+                    deltas = ev.get("deltas", [])
+                    if deltas:
+                        set_timer_resolution_ms(1)
+                        try:
+                            drag_wall = time.perf_counter()
+                            for ddx, ddy, dt in deltas:
+                                if self._stop_evt.is_set():
+                                    break
+                                target_t = dt / self._speed
+                                slp = target_t - (time.perf_counter() - drag_wall)
+                                if slp > 0.0015:
+                                    self._stop_evt.wait(timeout=slp - 0.0005)
+                                while (time.perf_counter() - drag_wall) < target_t:
+                                    if self._stop_evt.is_set():
+                                        break
+                                if self._stop_evt.is_set():
+                                    break
+                                send_mouse_move_relative(int(ddx), int(ddy))
+                        finally:
+                            reset_timer_resolution_ms(1)
 
                 elif tp == "key_press":
                     k     = ev["key"]

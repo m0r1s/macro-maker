@@ -18,7 +18,7 @@ Full license text: See LICENSE.md
 For support: https://discord.gg/2fraBuhe3m
 """
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 __author__ = "moris"
 __license__ = "MORIS UNIVERSAL LICENSE"
 

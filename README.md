@@ -1,26 +1,25 @@
-# moris macro maker — m³
+# moris macro maker - m³
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/) [![License: MUL](https://img.shields.io/badge/license-MUL-orange.svg)](LICENSE.md) [![Platform: Windows](https://img.shields.io/badge/platform-Windows-informational.svg)](https://www.microsoft.com/windows) [![Discord](https://img.shields.io/badge/Discord-Join-5865F2.svg)](https://discord.com/invite/2fraBuhe3m)
 
-A lightweight macro recording and playback tool for Windows and macOS. Record your keyboard and mouse actions once, then replay them instantly — with full control over speed, looping, and timing.
-
-Tired of repeating the same clicks and keystrokes? m³ captures everything you do and plays it back with precision. No scripting, no setup — just record and go.
+A lightweight macro recording and playback tool for Windows and macOS.
 
 ---
 
 ## Features
 
-- **Full Input Recording** — Captures keyboard presses, mouse clicks, movement, and scrolling in real-time
-- **Playback Control** — Replay at adjustable speed with configurable loop count and interval timing
-- **Custom Hotkeys** — Bind any key to start/stop recording and playback (default: F1 / F2); hold to pause instead of stopping
-- **Event Editing** — Add, copy (Ctrl+C), and paste (Ctrl+V) inputs; use Insert After preview to place new inputs precisely
-- **Loop Above** — Insert a Loop Above event to loop a subset of inputs within a sequence without re-recording
-- **Mouse Movement** — Linear or Humanoid movement modes with configurable move duration and set-position support
-- **Webhook Support** — Trigger Discord or HTTP webhooks during playback for notifications and integrations
-- **Auto-Save** — Your last session is automatically saved and restored on next launch
-- **Save / Load Macros** — Export and import macros as `.mmr` files — share and reuse across sessions
-- **macOS Support** — v1.1 adds full macOS compatibility with the same feature set as Windows
-- **Cross-Platform Input** — Runs on Windows and macOS using native OS APIs for reliable, low-level input simulation
+- **Full Input Recording** - Captures keyboard presses, mouse clicks, movement, scrolling, and right-click dragging in real-time
+- **Playback Control** - Replay at adjustable speed with configurable loop count and interval timing
+- **Custom Hotkeys** - Bind any key to start/stop recording and playback (default: F1 / F2); hold to pause instead of stopping
+- **Event Editing** - Add, copy (Ctrl+C), and paste (Ctrl+V) inputs; use Insert After preview to place new inputs precisely
+- **Loop Above** - Insert a Loop Above event to loop a subset of inputs within a sequence without re-recording
+- **Mouse Movement** - Linear or Humanoid movement modes with configurable move duration and set-position support
+- **Right-Click Dragging** - Records and replays right-click drag actions using raw hardware input for accurate delta-based playback
+- **Webhook Support** - Trigger Discord or HTTP webhooks during playback for notifications and integrations
+- **Auto-Save** - Your last session is automatically saved and restored on next launch
+- **Save / Load Macros** - Export and import macros as `.mmr` files; share and reuse across sessions
+- **macOS Support** - Full macOS compatibility with the same feature set as Windows
+- **Cross-Platform Input** - Runs on Windows and macOS using native OS APIs for reliable, low-level input simulation
 
 ---
 
@@ -45,7 +44,7 @@ python src/macro_maker/main.py
 
 ### Option 2: Windows Standalone (.exe)
 
-Download the latest release from the [Releases](https://github.com/m0r1s/macro-maker/releases) page and run the `.exe` — no Python required.
+Download the latest release from the [Releases](https://github.com/m0r1s/macro-maker/releases) page and run the `.exe` - no Python required.
 
 ### Troubleshooting Installation
 
@@ -65,7 +64,7 @@ Download the latest release from the [Releases](https://github.com/m0r1s/macro-m
 ### 1. Record a Macro
 
 - Press **F1** to start recording
-- Perform your actions — mouse movements, clicks, scrolling, typing
+- Perform your actions - mouse movements, clicks, scrolling, typing
 - Press **F1** again to stop
 - Your macro is auto-saved
 
@@ -73,7 +72,7 @@ Download the latest release from the [Releases](https://github.com/m0r1s/macro-m
 
 - Press **F2** to play
 - Press **F2** again to stop early
-- Adjust speed in the UI (e.g. 0.5× for slower, 2× for faster)
+- Adjust speed in the UI (e.g. 0.5x for slower, 2x for faster)
 
 ### 3. Customize
 
@@ -93,9 +92,9 @@ Download the latest release from the [Releases](https://github.com/m0r1s/macro-m
 
 ### Known Limitations
 
-- **Coordinate-based** — mouse positions are absolute; changing screen resolution affects playback
-- **No conditional logic** — macros run the same way every time
-- **Anti-cheat** — games with anti-cheat systems may block input simulation
+- **Coordinate-based** - mouse positions are absolute; changing screen resolution affects playback
+- **No conditional logic** - macros run the same way every time
+- **Anti-cheat** - games with anti-cheat systems may rarely block input simulation
 
 ---
 
@@ -110,13 +109,13 @@ Download the latest release from the [Releases](https://github.com/m0r1s/macro-m
 - Auto-save and `.mmr` file format
 - macOS support
 - Loop Above, Linear/Humanoid mouse movement
+- Right-click dragging recording
 
 ### Planned
 - [ ] Macro scheduling (run at a specific time)
 - [ ] Conditional event logic
-- [ ] Debug Mode — step-by-step playback
+- [ ] Debug Mode - step-by-step playback
 - [ ] Multi-macro scheduling
-- [ ] Right click dragging recording
 
 ---
 
@@ -141,7 +140,7 @@ src/macro_maker/
 
 ## License
 
-This project is licensed under the **MORIS UNIVERSAL LICENSE (MUL)** — see [LICENSE.md](LICENSE.md) for full terms.
+This project is licensed under the **MORIS UNIVERSAL LICENSE (MUL)** - see [LICENSE.md](LICENSE.md) for full terms.
 
 **Summary:**
 - Personal, non-commercial use only
@@ -165,6 +164,6 @@ When reporting a bug, include:
 
 ## Show Your Support
 
-If m³ saves you time, consider starring the repo on GitHub — it helps others find the project.
+If m³ saves you time, consider starring the repo on GitHub and/or join the Discord - it helps others find the project.
 
 Made with ♡ by _**moris**_ and _**tim**_

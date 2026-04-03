@@ -45,6 +45,7 @@ class EvtCode(IntEnum):
     LOOP_ABOVE = 5
     MOVE_EX    = 6
     MOVE_REC   = 7
+    DRAG_RIGHT = 8
 
 
 SW_W: int     = 40

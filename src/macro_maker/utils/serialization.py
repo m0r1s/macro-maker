@@ -221,6 +221,11 @@ def mmr_save(events: list[dict], path: str) -> None:
             elif tp == "loop_above":
                 count = max(1, int(ev.get("count", 1)))
                 buf += struct.pack("<BdI", EvtCode.LOOP_ABOVE, t, count)
+            elif tp == "mouse_drag_right":
+                deltas = ev.get("deltas", [])
+                buf += struct.pack("<BdI", EvtCode.DRAG_RIGHT, t, len(deltas))
+                for ddx, ddy, dt in deltas:
+                    buf += struct.pack("<iid", int(ddx), int(ddy), float(dt))
         except Exception:
             pass
     with open(path, "wb") as f:
@@ -281,6 +286,17 @@ def mmr_load(path: str) -> list[dict]:
             (count,) = struct.unpack_from("<I", data, pos)
             pos += 4
             events.append({"type": "loop_above", "count": int(count), "time": t})
+        elif code == EvtCode.DRAG_RIGHT:
+            (n_deltas,) = struct.unpack_from("<I", data, pos)
+            pos += 4
+            deltas = []
+            for _ in range(n_deltas):
+                ddx, ddy = struct.unpack_from("<ii", data, pos)
+                pos += 8
+                (dt,) = struct.unpack_from("<d", data, pos)
+                pos += 8
+                deltas.append([ddx, ddy, dt])
+            events.append({"type": "mouse_drag_right", "time": t, "deltas": deltas})
     return events
 
 

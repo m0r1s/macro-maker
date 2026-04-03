@@ -1128,7 +1128,7 @@ class SettingsDlg(QDialog):
         credits_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         credits_lbl.setStyleSheet(lbl_style)
 
-        version_lbl = QLabel("v1.1.0")
+        version_lbl = QLabel("v1.2.0")
         version_lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         version_lbl.setStyleSheet(lbl_style)
 
