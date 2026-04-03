@@ -2385,15 +2385,27 @@ class MainWindow(QWidget):
     def _seq_events(self) -> list:
         out: list           = []
         seq_id_counter: int = getattr(self, "_seq_id_counter", 0)
+        group_id: int       = 0
+        prev_recorded_move  = False
         for ev in self._events:
             tp = ev["type"]
             if tp == "mouse_move":
-                if (out and out[-1]["type"] == "mouse_move"
-                        and out[-1].get("recorded") and ev.get("recorded")):
-                    out[-1] = ev
+                if ev.get("recorded"):
+                    if not prev_recorded_move:
+                        group_id += 1
+                    prev_recorded_move = True
+                    ev["_group_id"] = group_id
+                    if (out and out[-1]["type"] == "mouse_move"
+                            and out[-1].get("recorded")):
+                        out[-1] = ev
+                    else:
+                        out.append(ev)
                 else:
+                    prev_recorded_move = False
+                    ev.pop("_group_id", None)
                     out.append(ev)
             else:
+                prev_recorded_move = False
                 if "_seq_id" not in ev:
                     ev["_seq_id"] = seq_id_counter
                     seq_id_counter += 1
@@ -2743,63 +2755,36 @@ class MainWindow(QWidget):
             return
 
         raw_moves = [e for e in self._events if e["type"] == "mouse_move"]
-        new_non_moves = [e for e in events if e["type"] != "mouse_move"]
 
-        seq_moves = [e for e in events if e["type"] == "mouse_move"]
-        extra_input_moves: list = []
-        if seq_moves and raw_moves:
-            g_idx = 0
-            for i, ev in enumerate(self._events):
-                if ev["type"] != "mouse_move":
-                    continue
-                nxt = self._events[i + 1] if i + 1 < len(self._events) else None
-                is_last = (not ev.get("recorded")
-                           or nxt is None
-                           or nxt["type"] != "mouse_move"
-                           or not nxt.get("recorded"))
-                if is_last and g_idx < len(seq_moves):
-                    src = seq_moves[g_idx]
+        group_frames: dict = {}
+        for ev in raw_moves:
+            gid = ev.get("_group_id")
+            if gid is not None and ev.get("recorded"):
+                if gid not in group_frames:
+                    group_frames[gid] = []
+                group_frames[gid].append(ev)
+
+        for ev in events:
+            if ev.get("type") == "mouse_move" and ev.get("recorded"):
+                gid = ev.get("_group_id")
+                if gid in group_frames:
+                    last = group_frames[gid][-1]
                     for k in ("x", "y", "move_duration", "move_mode"):
-                        if k in src:
-                            ev[k] = src[k]
-                    g_idx += 1
-            extra_input_moves = seq_moves[g_idx:]
-
-        if not raw_moves:
-            self._events = seq_moves + new_non_moves
-            autosave(self._events)
-            self._sync()
-            return
-
-        if extra_input_moves:
-            new_non_moves = new_non_moves + extra_input_moves
-
-        existing_non_moves = {
-            e["_seq_id"]: e
-            for e in self._events
-            if e["type"] != "mouse_move" and "_seq_id" in e
-        }
-        resolved_non_moves: list = []
-        for ev in new_non_moves:
-            resolved_non_moves.append(dict(ev))
-
-        move_list       = list(raw_moves)
-        non_move_list   = list(zip(resolved_non_moves,
-                                   [e.get("time", 0.0) for e in resolved_non_moves]))
-        non_move_list.sort(key=lambda x: x[1])
+                        if k in ev:
+                            last[k] = ev[k]
 
         merged: list = []
-        mi, ni = 0, 0
-        while mi < len(move_list) or ni < len(non_move_list):
-            if mi >= len(move_list):
-                merged.append(non_move_list[ni][0]); ni += 1
-            elif ni >= len(non_move_list):
-                merged.append(move_list[mi]); mi += 1
-            else:
-                if non_move_list[ni][1] <= move_list[mi]["time"]:
-                    merged.append(non_move_list[ni][0]); ni += 1
+        for ev in events:
+            tp = ev.get("type")
+            if tp == "mouse_move":
+                gid = ev.get("_group_id")
+                if gid is not None and gid in group_frames:
+                    merged.extend(group_frames[gid])
                 else:
-                    merged.append(move_list[mi]); mi += 1
+
+                    merged.append(dict(ev))
+            else:
+                merged.append(dict(ev))
 
         self._events = merged
         autosave(self._events)
