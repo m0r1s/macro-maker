@@ -483,7 +483,7 @@ def send_webhook(
             "title":       "moris macro maker - m\u00b3",
             "description": message or "\u200b",
             "color":       0x4DB8FF,
-            "footer":      {"text": "v1.0"},
+            "footer":      {"text": "v1.2.2"},
             "timestamp":   datetime.datetime.utcnow().strftime(
                 "%Y-%m-%dT%H:%M:%SZ"),
         }
