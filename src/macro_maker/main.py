@@ -24,6 +24,9 @@ import base64
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# pynput must be imported before PySide6 to avoid a six/shibokensupport conflict
+import pynput  # noqa: F401
+
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QApplication
 

@@ -226,6 +226,17 @@ def mmr_save(events: list[dict], path: str) -> None:
                 buf += struct.pack("<BdI", EvtCode.DRAG_RIGHT, t, len(deltas))
                 for ddx, ddy, dt in deltas:
                     buf += struct.pack("<iid", int(ddx), int(ddy), float(dt))
+            elif tp == "wait":
+                dur = float(ev.get("duration", 1.0))
+                buf += struct.pack("<Bdd", EvtCode.WAIT, t, dur)
+            elif tp == "webhook":
+                url_b  = ev.get("url", "").encode("utf-8")[:65535]
+                uid_b  = ev.get("user_id", "").encode("utf-8")[:65535]
+                msg_b  = ev.get("message", "").encode("utf-8")[:65535]
+                buf += struct.pack("<Bd", EvtCode.WEBHOOK, t)
+                buf += struct.pack("<H", len(url_b)) + url_b
+                buf += struct.pack("<H", len(uid_b)) + uid_b
+                buf += struct.pack("<H", len(msg_b)) + msg_b
         except Exception:
             pass
     with open(path, "wb") as f:
@@ -242,6 +253,8 @@ def mmr_load(path: str) -> list[dict]:
     pos += 4
     events: list[dict] = []
     for _ in range(n):
+        if pos >= len(data):
+            break
         code = data[pos]
         pos += 1
         (t,) = struct.unpack_from("<d", data, pos)
@@ -297,6 +310,19 @@ def mmr_load(path: str) -> list[dict]:
                 pos += 8
                 deltas.append([ddx, ddy, dt])
             events.append({"type": "mouse_drag_right", "time": t, "deltas": deltas})
+        elif code == EvtCode.WAIT:
+            (dur,) = struct.unpack_from("<d", data, pos)
+            pos += 8
+            events.append({"type": "wait", "duration": dur, "time": t})
+        elif code == EvtCode.WEBHOOK:
+            (url_len,) = struct.unpack_from("<H", data, pos); pos += 2
+            url = data[pos:pos + url_len].decode("utf-8"); pos += url_len
+            (uid_len,) = struct.unpack_from("<H", data, pos); pos += 2
+            uid = data[pos:pos + uid_len].decode("utf-8"); pos += uid_len
+            (msg_len,) = struct.unpack_from("<H", data, pos); pos += 2
+            msg = data[pos:pos + msg_len].decode("utf-8"); pos += msg_len
+            events.append({"type": "webhook", "url": url, "user_id": uid,
+                           "message": msg, "time": t})
     return events
 
 

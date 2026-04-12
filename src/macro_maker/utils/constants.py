@@ -46,6 +46,8 @@ class EvtCode(IntEnum):
     MOVE_EX    = 6
     MOVE_REC   = 7
     DRAG_RIGHT = 8
+    WAIT       = 9
+    WEBHOOK    = 10
 
 
 SW_W: int     = 40
