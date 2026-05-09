@@ -29,14 +29,18 @@ QWidget {{
     font-family: {FONT};
     font-size: 12px;
 }}
+QWidget#windowBorder {{
+    background: rgba(255,255,255,0.18);
+    border-radius: 12px;
+}}
 QWidget#mainContainer {{
     background: #121212;
-    border-radius: 12px;
+    border-radius: 11px;
 }}
 QWidget#titleBar {{
     background: #0a0a0a;
-    border-top-left-radius: 12px;
-    border-top-right-radius: 12px;
+    border-top-left-radius: 11px;
+    border-top-right-radius: 11px;
     border-bottom: 1px solid rgba(255,255,255,0.07);
 }}
 QFrame#sep  {{ background: rgba(255,255,255,0.07); border: none; }}
@@ -318,8 +322,8 @@ QLabel#dlgHeading {{
 QWidget#seqPanel {{
     background: #0a0a0a;
     border-top: 1px solid rgba(255,255,255,0.07);
-    border-bottom-left-radius: 12px;
-    border-bottom-right-radius: 12px;
+    border-bottom-left-radius: 11px;
+    border-bottom-right-radius: 11px;
 }}
 QScrollArea#seqScroll {{
     background: transparent;

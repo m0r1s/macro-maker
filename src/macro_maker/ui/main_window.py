@@ -201,15 +201,24 @@ class AddInputDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 18)
 
-        container = QWidget()
-        container.setObjectName("mainContainer")
-        container.setAttribute(Qt.WA_StyledBackground, True)
+        border = QWidget()
+        border.setObjectName("windowBorder")
+        border.setAttribute(Qt.WA_StyledBackground, True)
         sh = QGraphicsDropShadowEffect()
         sh.setBlurRadius(40)
         sh.setColor(QColor(0, 0, 0, 200))
         sh.setOffset(0, 10)
-        container.setGraphicsEffect(sh)
-        outer.addWidget(container)
+        border.setGraphicsEffect(sh)
+        outer.addWidget(border)
+
+        border_lo = QVBoxLayout(border)
+        border_lo.setContentsMargins(1, 1, 1, 1)
+        border_lo.setSpacing(0)
+
+        container = QWidget()
+        container.setObjectName("mainContainer")
+        container.setAttribute(Qt.WA_StyledBackground, True)
+        border_lo.addWidget(container)
 
         root = QVBoxLayout(container)
         root.setContentsMargins(0, 0, 0, 0)
@@ -744,15 +753,24 @@ class SettingsDlg(QDialog):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 12, 12, 18)
 
-        container = QWidget()
-        container.setObjectName("mainContainer")
-        container.setAttribute(Qt.WA_StyledBackground, True)
+        border = QWidget()
+        border.setObjectName("windowBorder")
+        border.setAttribute(Qt.WA_StyledBackground, True)
         sh = QGraphicsDropShadowEffect()
         sh.setBlurRadius(40)
         sh.setColor(QColor(0, 0, 0, 200))
         sh.setOffset(0, 10)
-        container.setGraphicsEffect(sh)
-        outer.addWidget(container)
+        border.setGraphicsEffect(sh)
+        outer.addWidget(border)
+
+        border_lo = QVBoxLayout(border)
+        border_lo.setContentsMargins(1, 1, 1, 1)
+        border_lo.setSpacing(0)
+
+        container = QWidget()
+        container.setObjectName("mainContainer")
+        container.setAttribute(Qt.WA_StyledBackground, True)
+        border_lo.addWidget(container)
 
         root = QVBoxLayout(container)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2127,10 +2145,19 @@ class MainWindow(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(10, 10, 10, 10)
 
+        border = QWidget()
+        border.setObjectName("windowBorder")
+        border.setAttribute(Qt.WA_StyledBackground, True)
+        outer.addWidget(border)
+
+        border_lo = QVBoxLayout(border)
+        border_lo.setContentsMargins(1, 1, 1, 1)
+        border_lo.setSpacing(0)
+
         container = QWidget()
         container.setObjectName("mainContainer")
         container.setAttribute(Qt.WA_StyledBackground, True)
-        outer.addWidget(container)
+        border_lo.addWidget(container)
         self._container = container
 
         root = QVBoxLayout(container)
@@ -2651,7 +2678,7 @@ class MainWindow(QWidget):
             self._container.setStyleSheet("")
         else:
             self._container.setStyleSheet(
-                "QWidget#mainContainer { background: #121212; border-radius: 12px;"
+                "QWidget#mainContainer { background: #121212; border-radius: 11px;"
                 " border-bottom-left-radius: 0px;"
                 " border-bottom-right-radius: 0px; }")
 
